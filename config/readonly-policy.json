@@ -1,0 +1,47 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:Describe*",
+        "ec2:List*",
+        "iam:List*",
+        "iam:Get*",
+        "s3:List*",
+        "s3:Get*",
+        "rds:Describe*",
+        "rds:List*",
+        "cloudtrail:Describe*",
+        "cloudtrail:List*",
+        "cloudtrail:Get*",
+        "cloudwatch:Describe*",
+        "cloudwatch:List*",
+        "cloudwatch:Get*",
+        "config:Describe*",
+        "config:List*",
+        "config:Get*",
+        "ssm:Describe*",
+        "ssm:List*",
+        "ssm:Get*",
+        "guardduty:List*",
+        "guardduty:Get*",
+        "kms:List*",
+        "kms:Describe*",
+        "autoscaling:Describe*",
+        "elasticloadbalancing:Describe*",
+        "route53:List*",
+        "route53:Get*",
+        "cloudfront:List*",
+        "cloudfront:Get*",
+        "elasticache:Describe*",
+        "lambda:List*",
+        "lambda:Get*",
+        "ce:Get*",
+        "ce:List*",
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

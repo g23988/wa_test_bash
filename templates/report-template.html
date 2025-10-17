@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AWS Well-Architected Assessment Report</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #f8f9fa;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #232f3e 0%, #ff9900 100%);
+            color: white;
+            padding: 40px 20px;
+            text-align: center;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header h2 {
+            font-size: 1.5em;
+            opacity: 0.9;
+        }
+        
+        .info-section {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }
+        
+        .info-item {
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #ff9900;
+        }
+        
+        .info-item h4 {
+            color: #232f3e;
+            margin-bottom: 10px;
+        }
+        
+        .pillars-section {
+            margin-bottom: 30px;
+        }
+        
+        .pillars-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+        }
+        
+        .pillar-card {
+            background: white;
+            border-radius: 10px;
+            padding: 25px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        
+        .pillar-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.15);
+        }
+        
+        .pillar-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .pillar-icon {
+            font-size: 2em;
+            margin-right: 15px;
+        }
+        
+        .pillar-title {
+            color: #232f3e;
+            font-size: 1.3em;
+            font-weight: bold;
+        }
+        
+        .pillar-subtitle {
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+        
+        .pillar-status {
+            display: inline-block;
+            padding: 5px 15px;
+            background: #28a745;
+            color: white;
+            border-radius: 20px;
+            font-size: 0.8em;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        
+        .pillar-description {
+            color: #666;
+            line-height: 1.5;
+        }
+        
+        .recommendations-section {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+        
+        .recommendations-section h3 {
+            color: #232f3e;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+            display: flex;
+            align-items: center;
+        }
+        
+        .recommendations-section h3::before {
+            content: "📋";
+            margin-right: 10px;
+            font-size: 1.2em;
+        }
+        
+        .recommendations-list {
+            list-style: none;
+            padding: 0;
+        }
+        
+        .recommendations-list li {
+            padding: 12px 0;
+            border-bottom: 1px solid #eee;
+            position: relative;
+            padding-left: 30px;
+        }
+        
+        .recommendations-list li::before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: #28a745;
+            font-weight: bold;
+        }
+        
+        .recommendations-list li:last-child {
+            border-bottom: none;
+        }
+        
+        .footer {
+            text-align: center;
+            padding: 30px;
+            background: #232f3e;
+            color: white;
+            border-radius: 10px;
+            margin-top: 30px;
+        }
+        
+        .footer p {
+            margin-bottom: 10px;
+        }
+        
+        .section-title {
+            color: #232f3e;
+            font-size: 2em;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+            }
+            
+            .header h1 {
+                font-size: 2em;
+            }
+            
+            .header h2 {
+                font-size: 1.2em;
+            }
+            
+            .pillars-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .info-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>AWS Well-Architected Framework</h1>
+            <h2>6 Pillars Assessment Report</h2>
+        </div>
+
+        <div class="info-section">
+            <h3 class="section-title">評估資訊</h3>
+            <div class="info-grid">
+                <div class="info-item">
+                    <h4>AWS 帳戶</h4>
+                    <p>{{ACCOUNT_ID}}</p>
+                </div>
+                <div class="info-item">
+                    <h4>評估區域</h4>
+                    <p>{{REGION}}</p>
+                </div>
+                <div class="info-item">
+                    <h4>評估時間</h4>
+                    <p>{{TIMESTAMP}}</p>
+                </div>
+                <div class="info-item">
+                    <h4>評估狀態</h4>
+                    <p>已完成</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="pillars-section">
+            <h3 class="section-title">6 個支柱評估結果</h3>
+            <div class="pillars-grid">
+                <div class="pillar-card">
+                    <div class="pillar-header">
+                        <span class="pillar-icon">🔧</span>
+                        <div>
+                            <div class="pillar-title">Operational Excellence</div>
+                            <div class="pillar-subtitle">營運卓越</div>
+                        </div>
+                    </div>
+                    <div class="pillar-status">已完成</div>
+                    <p class="pillar-description">
+                        專注於運行和監控系統，持續改進流程和程序。包括自動化、監控、事件回應和持續改進。
+                    </p>
+                </div>
+
+                <div class="pillar-card">
+                    <div class="pillar-header">
+                        <span class="pillar-icon">🔒</span>
+                        <div>
+                            <div class="pillar-title">Security</div>
+                            <div class="pillar-subtitle">安全性</div>
+                        </div>
+                    </div>
+                    <div class="pillar-status">已完成</div>
+                    <p class="pillar-description">
+                        保護資訊和系統，透過風險評估和緩解策略。包括身份管理、偵測控制和資料保護。
+                    </p>
+                </div>
+
+                <div class="pillar-card">
+                    <div class="pillar-header">
+                        <span class="pillar-icon">🛡️</span>
+                        <div>
+                            <div class="pillar-title">Reliability</div>
+                            <div class="pillar-subtitle">可靠性</div>
+                        </div>
+                    </div>
+                    <div class="pillar-status">已完成</div>
+                    <p class="pillar-description">
+                        確保工作負載執行其預期功能，並從故障中快速恢復。包括容錯設計和災難復原。
+                    </p>
+                </div>
+
+                <div class="pillar-card">
+                    <div class="pillar-header">
+                        <span class="pillar-icon">⚡</span>
+                        <div>
+                            <div class="pillar-title">Performance Efficiency</div>
+                            <div class="pillar-subtitle">效能效率</div>
+                        </div>
+                    </div>
+                    <div class="pillar-status">已完成</div>
+                    <p class="pillar-description">
+                        有效使用 IT 和計算資源，隨需求變化維持效率。包括資源選擇、監控和優化。
+                    </p>
+                </div>
+
+                <div class="pillar-card">
+                    <div class="pillar-header">
+                        <span class="pillar-icon">💰</span>
+                        <div>
+                            <div class="pillar-title">Cost Optimization</div>
+                            <div class="pillar-subtitle">成本優化</div>
+                        </div>
+                    </div>
+                    <div class="pillar-status">已完成</div>
+                    <p class="pillar-description">
+                        避免不必要的成本，了解資金使用情況。包括成本意識、資源優化和長期規劃。
+                    </p>
+                </div>
+
+                <div class="pillar-card">
+                    <div class="pillar-header">
+                        <span class="pillar-icon">🌱</span>
+                        <div>
+                            <div class="pillar-title">Sustainability</div>
+                            <div class="pillar-subtitle">永續性</div>
+                        </div>
+                    </div>
+                    <div class="pillar-status">已完成</div>
+                    <p class="pillar-description">
+                        最小化雲端工作負載的環境影響。包括能源效率、資源優化和永續設計原則。
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div class="recommendations-section">
+            <h3>整體建議與後續步驟</h3>
+            <ul class="recommendations-list">
+                <li>定期執行 Well-Architected 評估以確保持續改進</li>
+                <li>實施自動化監控和警報系統</li>
+                <li>建立完整的災難復原和業務持續性計畫</li>
+                <li>持續優化成本和效能表現</li>
+                <li>加強安全性措施和合規性要求</li>
+                <li>採用永續性最佳實務和綠色技術</li>
+                <li>建立跨團隊的 Well-Architected 文化</li>
+                <li>定期檢視和更新架構設計</li>
+            </ul>
+        </div>
+
+        <div class="footer">
+            <p><strong>AWS Well-Architected Assessment Tool</strong></p>
+            <p>此報告提供架構評估的概覽，建議定期重新評估以確保最佳實務</p>
+            <p>生成時間: {{GENERATION_TIME}}</p>
+        </div>
+    </div>
+</body>
+</html>
