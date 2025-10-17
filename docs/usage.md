@@ -31,7 +31,37 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 ./scripts/pillars/cost-optimization.sh $ACCOUNT_ID $REGION $TIMESTAMP
 ```
 
-### 指定區域執行
+### 區域管理
+
+#### 設定評估區域
+
+```bash
+# 使用互動式區域設定工具
+./scripts/set-region.sh
+
+# 直接設定特定區域
+./scripts/set-region.sh us-east-1
+
+# 使用快速區域切換
+./scripts/quick-region.sh us1    # 切換到 us-east-1
+./scripts/quick-region.sh ap1    # 切換到 ap-southeast-1
+
+# 查看當前區域
+./scripts/set-region.sh --current
+./scripts/quick-region.sh --current
+```
+
+#### 在評估時設定區域
+
+```bash
+# 在執行評估前設定區域
+./scripts/wa-assessment.sh --set-region
+
+# 或使用配置檢查工具
+./config/aws-config.sh --set-region
+```
+
+#### 傳統方式設定區域
 
 ```bash
 # 設定特定區域
@@ -44,6 +74,21 @@ aws configure set region ap-southeast-1
 ```
 
 ### 批次執行多區域評估
+
+#### 使用新的區域管理工具
+
+```bash
+#!/bin/bash
+regions=("us1" "us2" "ap1" "eu1")  # 使用快速代碼
+
+for region_code in "${regions[@]}"; do
+    echo "評估區域: $region_code"
+    ./scripts/quick-region.sh "$region_code"
+    ./scripts/wa-assessment.sh
+done
+```
+
+#### 傳統方式
 
 ```bash
 #!/bin/bash

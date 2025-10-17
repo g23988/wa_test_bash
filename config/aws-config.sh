@@ -116,14 +116,70 @@ set_region() {
         region=${region:-us-east-1}
     fi
     
-    aws configure set region "$region"
-    log_success "區域已設定為: $region"
+    # 驗證區域有效性
+    if aws ec2 describe-instances --region "$region" --max-items 1 &>/dev/null; then
+        aws configure set region "$region"
+        export AWS_DEFAULT_REGION="$region"
+        log_success "區域已設定為: $region"
+    else
+        log_error "無效的區域: $region"
+        return 1
+    fi
+}
+
+# 重新設定區域
+reconfigure_region() {
+    log_info "重新設定 AWS 區域"
+    echo "當前區域: $(aws configure get region || echo '未設定')"
+    echo
+    echo "選項:"
+    echo "  1) 使用互動式區域設定工具"
+    echo "  2) 手動輸入區域"
+    echo "  3) 重設為預設區域 (us-east-1)"
+    echo
+    
+    read -p "請選擇 (1-3): " choice
+    
+    case $choice in
+        1)
+            if [[ -f "$(dirname "$0")/set-region.sh" ]]; then
+                "$(dirname "$0")/set-region.sh"
+            else
+                log_warning "找不到區域設定工具，改用手動輸入"
+                set_region
+            fi
+            ;;
+        2)
+            set_region
+            ;;
+        3)
+            set_region "us-east-1"
+            ;;
+        *)
+            log_warning "無效選擇，保持當前設定"
+            ;;
+    esac
 }
 
 # 主函數
 main() {
     echo "AWS Well-Architected Assessment Tool - 配置檢查"
     echo "================================================"
+    
+    # 檢查命令列參數
+    case "${1:-}" in
+        --set-region|-r)
+            reconfigure_region
+            exit 0
+            ;;
+        --help|-h)
+            echo "使用方式:"
+            echo "  $0                # 執行完整配置檢查"
+            echo "  $0 --set-region   # 重新設定區域"
+            echo "  $0 --help         # 顯示此說明"
+            exit 0
+            ;;
+    esac
     
     check_aws_config
     if [ $? -ne 0 ]; then
@@ -135,10 +191,16 @@ main() {
     # 如果沒有設定區域，提示設定
     if [ -z "$(aws configure get region)" ]; then
         log_warning "未設定預設區域"
-        set_region
+        reconfigure_region
     fi
     
     log_success "配置檢查完成，可以開始執行評估"
+    
+    # 提示可用的區域管理選項
+    echo
+    echo "區域管理選項:"
+    echo "  ./config/aws-config.sh --set-region  # 重新設定區域"
+    echo "  ./scripts/set-region.sh              # 使用專用區域設定工具"
 }
 
 # 如果直接執行此腳本

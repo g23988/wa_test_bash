@@ -66,6 +66,29 @@ check_prerequisites() {
 
 # 主函數
 main() {
+    # 檢查命令列參數
+    case "${1:-}" in
+        --set-region|-r)
+            log_info "啟動區域設定工具..."
+            "$SCRIPT_DIR/set-region.sh"
+            exit 0
+            ;;
+        --help|-h)
+            echo "AWS Well-Architected 6 Pillars Assessment Tool"
+            echo
+            echo "使用方式:"
+            echo "  $0                # 執行完整評估"
+            echo "  $0 --set-region   # 設定評估區域"
+            echo "  $0 --help         # 顯示此說明"
+            echo
+            echo "評估前建議:"
+            echo "  1. 確認 AWS 憑證已正確配置"
+            echo "  2. 設定適當的評估區域"
+            echo "  3. 確保具有必要的 readonly 權限"
+            exit 0
+            ;;
+    esac
+    
     log_info "開始 AWS Well-Architected 6 Pillars 評估"
     
     check_prerequisites
@@ -76,7 +99,12 @@ main() {
     TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
     
     log_info "AWS 帳戶: $ACCOUNT_ID"
-    log_info "區域: $REGION"
+    log_info "評估區域: $REGION"
+    
+    # 確認區域設定
+    if [[ "$REGION" == "us-east-1" ]] && [[ -z "$(aws configure get region)" ]]; then
+        log_warning "使用預設區域 us-east-1，如需變更請執行: $0 --set-region"
+    fi
     
     # 執行各支柱檢查
     log_info "執行 6 個支柱檢查..."

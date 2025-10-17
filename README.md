@@ -25,8 +25,25 @@
 ## 使用方式
 
 1. 配置 AWS 憑證 (readonly 權限)
-2. 執行主要檢查腳本
-3. 查看生成的報告
+2. 設定評估區域
+3. 執行主要檢查腳本
+4. 查看生成的報告
+
+### 快速開始
+
+```bash
+# 1. 檢查 AWS 配置
+./config/aws-config.sh
+
+# 2. 設定評估區域 (可選)
+./scripts/set-region.sh
+
+# 3. 執行評估
+./scripts/wa-assessment.sh
+
+# 4. 查看報告
+open reports/wa-assessment-report_*.html
+```
 
 ## 前置需求
 
