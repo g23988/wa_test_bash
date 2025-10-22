@@ -129,24 +129,31 @@ main() {
     
     # 執行各支柱檢查
     log_info "執行 6 個支柱檢查..."
+    echo
     
     log_info "1/6 執行 Operational Excellence 檢查..."
-    "$SCRIPT_DIR/pillars/operational-excellence.sh" "$ACCOUNT_ID" "$REGION" "$TIMESTAMP"
+    "$SCRIPT_DIR/pillars/operational-excellence.sh" "$ACCOUNT_ID" "$REGION" "$TIMESTAMP" || log_warning "Operational Excellence 檢查遇到錯誤"
+    echo
     
     log_info "2/6 執行 Security 檢查 (詳細版本)..."
-    "$SCRIPT_DIR/pillars/security.sh" "$ACCOUNT_ID" "$REGION" "$TIMESTAMP"
+    "$SCRIPT_DIR/pillars/security.sh" "$ACCOUNT_ID" "$REGION" "$TIMESTAMP" || log_warning "Security 檢查遇到錯誤"
+    echo
     
     log_info "3/6 執行 Reliability 檢查..."
-    "$SCRIPT_DIR/pillars/reliability.sh" "$ACCOUNT_ID" "$REGION" "$TIMESTAMP"
+    "$SCRIPT_DIR/pillars/reliability.sh" "$ACCOUNT_ID" "$REGION" "$TIMESTAMP" || log_warning "Reliability 檢查遇到錯誤"
+    echo
     
     log_info "4/6 執行 Performance Efficiency 檢查..."
-    "$SCRIPT_DIR/pillars/performance-efficiency.sh" "$ACCOUNT_ID" "$REGION" "$TIMESTAMP"
+    "$SCRIPT_DIR/pillars/performance-efficiency.sh" "$ACCOUNT_ID" "$REGION" "$TIMESTAMP" || log_warning "Performance Efficiency 檢查遇到錯誤"
+    echo
     
     log_info "5/6 執行 Cost Optimization 檢查 (詳細版本)..."
-    "$SCRIPT_DIR/pillars/cost-optimization.sh" "$ACCOUNT_ID" "$REGION" "$TIMESTAMP"
+    "$SCRIPT_DIR/pillars/cost-optimization.sh" "$ACCOUNT_ID" "$REGION" "$TIMESTAMP" || log_warning "Cost Optimization 檢查遇到錯誤"
+    echo
     
     log_info "6/6 執行 Sustainability 檢查..."
-    "$SCRIPT_DIR/pillars/sustainability.sh" "$ACCOUNT_ID" "$REGION" "$TIMESTAMP"
+    "$SCRIPT_DIR/pillars/sustainability.sh" "$ACCOUNT_ID" "$REGION" "$TIMESTAMP" || log_warning "Sustainability 檢查遇到錯誤"
+    echo
     
     # 生成綜合報告
     "$SCRIPT_DIR/generate-report.sh" "$ACCOUNT_ID" "$REGION" "$TIMESTAMP"

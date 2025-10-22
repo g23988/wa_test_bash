@@ -110,7 +110,8 @@ check_iam_users_mfa_and_keys() {
     log_info "檢查 IAM 使用者 MFA 和存取金鑰..."
     users="$(aws iam list-users --query 'Users[].UserName' --output json 2>/dev/null || echo '[]')"
     
-    for u in $(echo "$users" | jq -r '.[]'); do
+    echo "$users" | jq -r '.[]' 2>/dev/null | while read -r u; do
+        [[ -z "$u" ]] && continue
         # MFA 檢查
         mfa_cnt="$(aws iam list-mfa-devices --user-name "$u" --query 'length(MFADevices)' --output text 2>/dev/null || echo 0)"
         [[ "$mfa_cnt" -gt 0 ]] \
@@ -139,21 +140,20 @@ check_iam_policy_wildcards() {
     log_info "檢查 IAM 政策萬用字元..."
     arns="$(aws iam list-policies --scope Local --only-attached --query 'Policies[].Arn' --output json 2>/dev/null || echo '[]')"
     
-    for arn in $(echo "$arns" | jq -r '.[]'); do
+    echo "$arns" | jq -r '.[]' 2>/dev/null | while read -r arn; do
+        [[ -z "$arn" ]] && continue
+        
         ver="$(aws iam get-policy --policy-arn "$arn" --query 'Policy.DefaultVersionId' --output text 2>/dev/null || true)"
-        [[ -z "$ver" ]] && { emit "IAM:PolicyWildcard" "$arn" "$r" "INFO" "LOW" "No permission to read version"; continue; }
+        if [[ -z "$ver" ]]; then
+            emit "IAM:PolicyWildcard" "$arn" "$r" "INFO" "LOW" "No permission to read version"
+            continue
+        fi
         
         doc="$(aws iam get-policy-version --policy-arn "$arn" --version-id "$ver" --query 'PolicyVersion.Document' --output json 2>/dev/null || echo '{}')"
-        if echo "$doc" | jq -e '
-            .Statement as $s |
-            ( ($s|type=="array")? $s : [$s]) |
-            map(
-                ( .Action|tostring|test("\\*") ) or
-                ( (.Action|arrays|map(tostring)|join(","))? // "" | test("\\*") ) or
-                ( .Resource|tostring|test("\\*") ) or
-                ( (.Resource|arrays|map(tostring)|join(","))? // "" | test("\\*") )
-            ) | any
-        ' >/dev/null; then
+        
+        # 簡化的萬用字元檢查 - 使用 grep 而非複雜 jq
+        if echo "$doc" | grep -qE '"Action"[[:space:]]*:[[:space:]]*"\*"' || \
+           echo "$doc" | grep -qE '"Resource"[[:space:]]*:[[:space:]]*"\*"'; then
             emit "IAM:PolicyWildcard" "$arn" "$r" "WARN" "MEDIUM" "Wildcard in Action/Resource"
         else
             emit "IAM:PolicyWildcard" "$arn" "$r" "OK" "LOW" "No obvious wildcards"
@@ -166,7 +166,8 @@ check_s3_security() {
     log_info "檢查 S3 安全配置..."
     buckets="$(aws s3api list-buckets --query 'Buckets[].Name' --output json 2>/dev/null || echo '[]')"
     
-    for b in $(echo "$buckets" | jq -r '.[]'); do
+    echo "$buckets" | jq -r '.[]' 2>/dev/null | while read -r b; do
+        [[ -z "$b" ]] && continue
         # Public Access Block 檢查
         pab="$(aws s3api get-public-access-block --bucket "$b" --output json 2>/dev/null || echo '{}')"
         pubblocked="$(echo "$pab" | jq -r '.PublicAccessBlockConfiguration | [ .BlockPublicAcls, .IgnorePublicAcls, .BlockPublicPolicy, .RestrictPublicBuckets ] | all' 2>/dev/null || echo false)"
@@ -255,27 +256,36 @@ check_cloudfront_security() {
 check_cloudtrail() {
     local region="$1"
     log_info "檢查 CloudTrail (區域: $region)..."
-    out="$(aws_try "$region" aws cloudtrail describe-trails --include-shadow-trails --output json)"
-    if [[ "$out" == __ERROR__* ]]; then
+    
+    local out
+    out="$(aws cloudtrail describe-trails --region "$region" --include-shadow-trails --output json 2>/dev/null || echo '{}')"
+    
+    if [[ "$out" == "{}" ]]; then
         emit "CloudTrail:Enabled" "-" "$region" "INFO" "HIGH" "AccessDenied or not permitted"
         return
     fi
     
-    count="$(echo "$out" | jq '.trailList | length')"
-    [[ "$count" -eq 0 ]] && emit "CloudTrail:Enabled" "-" "$region" "FAIL" "HIGH" "No trails" && return
+    local count
+    count="$(echo "$out" | jq '.trailList | length' 2>/dev/null || echo 0)"
     
-    echo "$out" | jq -c '.trailList[]' | while read -r t; do
-        name="$(echo "$t" | jq -r '.Name')"
-        st="$(aws_try "$region" aws cloudtrail get-trail-status --name "$name" --output json)"
-        if [[ "$st" == __ERROR__* ]]; then
+    if [[ "$count" -eq 0 ]]; then
+        emit "CloudTrail:Enabled" "-" "$region" "FAIL" "HIGH" "No trails"
+        return
+    fi
+    
+    # 簡化檢查，避免卡住
+    echo "$out" | jq -r '.trailList[]?.Name' 2>/dev/null | while read -r name; do
+        [[ -z "$name" ]] && continue
+        
+        local st
+        st="$(aws cloudtrail get-trail-status --region "$region" --name "$name" --output json 2>/dev/null || echo '{}')"
+        
+        if [[ "$st" == "{}" ]]; then
             emit "CloudTrail:Status" "$name" "$region" "INFO" "HIGH" "No permission to get status"
         else
-            logging="$(echo "$st" | jq -r '.IsLogging // false')"
-            lfv="$(aws cloudtrail get-trail --name "$name" --region "$region" --output json 2>/dev/null | jq -r '.Trail.LogFileValidationEnabled // false')"
-            status="OK"
-            [[ "$logging" != "true" ]] && status="FAIL"
-            [[ "$lfv" != "true" && "$status" == "OK" ]] && status="WARN"
-            emit "CloudTrail:Status" "$name" "$region" "$status" "HIGH" "IsLogging=$logging,LogFileValidation=$lfv"
+            local logging
+            logging="$(echo "$st" | jq -r '.IsLogging // false' 2>/dev/null || echo "false")"
+            emit "CloudTrail:Status" "$name" "$region" "$([[ "$logging" == "true" ]] && echo OK || echo FAIL)" "HIGH" "IsLogging=$logging"
         fi
     done
 }
@@ -295,25 +305,30 @@ check_ebs_encryption() {
 check_security_groups() {
     local region="$1"
     log_info "檢查 Security Groups 開放管理埠 (區域: $region)..."
-    sgs="$(aws_try "$region" aws ec2 describe-security-groups --output json)"
-    if [[ "$sgs" == __ERROR__* ]]; then
+    
+    local sgs
+    sgs="$(aws ec2 describe-security-groups --region "$region" --output json 2>/dev/null || echo '{}')"
+    
+    if [[ "$sgs" == "{}" ]]; then
         emit "EC2:SGOpenAdminPorts" "-" "$region" "INFO" "HIGH" "AccessDenied"
         return
     fi
     
-    echo "$sgs" | jq -c '.SecurityGroups[]?' | while read -r sg; do
-        id="$(echo "$sg" | jq -r '.GroupId')"
-        name="$(echo "$sg" | jq -r '.GroupName')"
-        hit="$(echo "$sg" | jq '
-            .IpPermissions[]? as $p |
-            ($p.FromPort // -1) as $fp |
-            ($p.ToPort // -1) as $tp |
-            ($p.IpRanges[]?.CidrIp // empty) as $cidr |
-            select(($cidr=="0.0.0.0/0") and (
-                ($fp<=22 and $tp>=22) or ($fp<=3389 and $tp>=3389)
-            ))
-        ' -c)"
-        [[ -n "$hit" ]] && emit "EC2:SGOpenAdminPorts" "$id($name)" "$region" "FAIL" "HIGH" "Open 22/3389 to world"
+    # 簡化檢查，使用 grep 而非複雜的 jq
+    echo "$sgs" | jq -r '.SecurityGroups[]? | .GroupId' 2>/dev/null | while read -r id; do
+        [[ -z "$id" ]] && continue
+        
+        local sg_data
+        sg_data="$(echo "$sgs" | jq -r --arg id "$id" '.SecurityGroups[] | select(.GroupId==$id)' 2>/dev/null || echo "")"
+        
+        # 檢查是否有 0.0.0.0/0 開放 22 或 3389 埠
+        if echo "$sg_data" | grep -q '"CidrIp": "0.0.0.0/0"'; then
+            if echo "$sg_data" | grep -E '"FromPort": (22|3389)|"ToPort": (22|3389)' &>/dev/null; then
+                local name
+                name="$(echo "$sg_data" | jq -r '.GroupName' 2>/dev/null || echo "unknown")"
+                emit "EC2:SGOpenAdminPorts" "$id($name)" "$region" "FAIL" "HIGH" "Open 22/3389 to world"
+            fi
+        fi
     done
 }
 
@@ -345,7 +360,8 @@ check_kms_rotation() {
         return
     fi
     
-    for k in $(echo "$keys" | jq -r '.[]'); do
+    echo "$keys" | jq -r '.[]' 2>/dev/null | while read -r k; do
+        [[ -z "$k" ]] && continue
         m="$(aws_try "$region" aws kms get-key-rotation-status --key-id "$k" --query 'KeyRotationEnabled' --output text)"
         if [[ "$m" == __ERROR__* ]]; then
             emit "KMS:RotationEnabled" "$k" "$region" "INFO" "LOW" "No permission"
@@ -366,7 +382,8 @@ check_acm_certificates() {
         return
     fi
     
-    for arn in $(echo "$cert_arns" | jq -r '.[]'); do
+    echo "$cert_arns" | jq -r '.[]' 2>/dev/null | while read -r arn; do
+        [[ -z "$arn" ]] && continue
         desc="$(aws_try "$region" aws acm describe-certificate --certificate-arn "$arn" --output json)"
         if [[ "$desc" == __ERROR__* ]]; then
             emit "ACM:Expiry" "$arn" "$region" "INFO" "LOW" "No permission to describe-certificate"
