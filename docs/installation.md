@@ -71,6 +71,15 @@ cd aws-wa-assessment
 ```
 
 ### 2. 設定執行權限
+
+#### 自動設定（推薦）
+```bash
+# 使用自動權限設定腳本
+chmod +x setup-permissions.sh
+./setup-permissions.sh
+```
+
+#### 手動設定
 ```bash
 chmod +x scripts/*.sh
 chmod +x scripts/pillars/*.sh

@@ -46,20 +46,41 @@ check_prerequisites() {
     # 檢查 AWS CLI
     if ! command -v aws &> /dev/null; then
         log_error "AWS CLI 未安裝"
+        echo "請安裝 AWS CLI: https://aws.amazon.com/cli/"
         exit 1
     fi
     
     # 檢查 jq
     if ! command -v jq &> /dev/null; then
         log_error "jq 未安裝"
+        echo "請安裝 jq: brew install jq (macOS) 或 sudo apt-get install jq (Ubuntu)"
         exit 1
     fi
     
     # 檢查 AWS 憑證
     if ! aws sts get-caller-identity &> /dev/null; then
         log_error "AWS 憑證配置錯誤"
+        echo "請執行: aws configure"
         exit 1
     fi
+    
+    # 檢查支柱腳本權限
+    local pillar_scripts=(
+        "$SCRIPT_DIR/pillars/operational-excellence.sh"
+        "$SCRIPT_DIR/pillars/security.sh"
+        "$SCRIPT_DIR/pillars/reliability.sh"
+        "$SCRIPT_DIR/pillars/performance-efficiency.sh"
+        "$SCRIPT_DIR/pillars/cost-optimization.sh"
+        "$SCRIPT_DIR/pillars/sustainability.sh"
+    )
+    
+    for script in "${pillar_scripts[@]}"; do
+        if [[ ! -x "$script" ]]; then
+            log_error "腳本沒有執行權限: $script"
+            echo "請執行權限設定腳本: ./setup-permissions.sh"
+            exit 1
+        fi
+    done
     
     log_success "前置需求檢查完成"
 }

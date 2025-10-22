@@ -228,24 +228,60 @@ done
 
 ## 故障排除
 
+### 自動診斷工具
+
+```bash
+# 執行完整的系統檢查
+./scripts/troubleshoot.sh
+
+# 設定腳本權限
+./setup-permissions.sh
+```
+
 ### 常見錯誤
 
-1. **權限不足錯誤**
+1. **權限被拒絕錯誤**
+   ```bash
+   # 錯誤訊息: Permission denied
+   # 解決方案: 設定執行權限
+   ./setup-permissions.sh
+   
+   # 或手動設定
+   chmod +x scripts/*.sh scripts/pillars/*.sh config/*.sh
+   ```
+
+2. **AWS 權限不足錯誤**
    ```bash
    # 檢查具體缺少的權限
    aws iam simulate-principal-policy --policy-source-arn $(aws sts get-caller-identity --query Arn --output text) --action-names ec2:DescribeInstances
+   
+   # 檢查當前權限
+   ./config/aws-config.sh
    ```
 
-2. **區域不支援某些服務**
+3. **區域不支援某些服務**
    ```bash
    # 檢查服務在該區域的可用性
    aws ec2 describe-regions --query 'Regions[?RegionName==`us-east-1`]'
+   
+   # 切換到支援的區域
+   ./scripts/set-region.sh
    ```
 
-3. **API 限流**
+4. **API 限流**
    ```bash
    # 在腳本中添加延遲
    sleep 1  # 在 API 調用之間添加延遲
+   ```
+
+5. **缺少必要工具**
+   ```bash
+   # 檢查並安裝 jq
+   brew install jq  # macOS
+   sudo apt-get install jq  # Ubuntu
+   
+   # 檢查並安裝 AWS CLI
+   brew install awscli  # macOS
    ```
 
 ## 效能優化
