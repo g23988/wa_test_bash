@@ -169,6 +169,18 @@ run_assessment() {
     
     check_required_files
     
+    # 獲取 AWS 帳戶和區域資訊
+    local account_id
+    local region
+    local timestamp
+    
+    account_id=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "unknown")
+    region=$(aws configure get region 2>/dev/null || echo "ap-southeast-1")
+    timestamp=$(date +"%Y%m%d_%H%M%S")
+    
+    # 確保 reports 目錄存在
+    mkdir -p reports
+    
     case "$pillar" in
         "all"|"run")
             log_info "執行完整的 6 支柱評估..."
@@ -176,15 +188,31 @@ run_assessment() {
             ;;
         "security")
             log_info "執行安全性支柱評估..."
-            # 這裡可以添加單獨執行安全性評估的邏輯
-            log_warning "單獨支柱評估功能開發中，執行完整評估..."
-            ./scripts/wa-assessment.sh
+            if [[ -x "scripts/pillars/security.sh" ]]; then
+                ./scripts/pillars/security.sh "$account_id" "$region" "$timestamp"
+                log_success "安全性評估完成！"
+                echo
+                echo "查看結果:"
+                echo "  cat reports/security_${timestamp}.json"
+                echo "  cat reports/security_detailed_${timestamp}.jsonl"
+            else
+                log_error "安全性評估腳本不存在或無執行權限"
+                exit 1
+            fi
             ;;
         "cost")
             log_info "執行成本優化支柱評估..."
-            # 這裡可以添加單獨執行成本評估的邏輯
-            log_warning "單獨支柱評估功能開發中，執行完整評估..."
-            ./scripts/wa-assessment.sh
+            if [[ -x "scripts/pillars/cost-optimization.sh" ]]; then
+                ./scripts/pillars/cost-optimization.sh "$account_id" "$region" "$timestamp"
+                log_success "成本優化評估完成！"
+                echo
+                echo "查看結果:"
+                echo "  cat reports/cost-optimization_${timestamp}.json"
+                echo "  cat reports/cost-optimization_detailed_${timestamp}.jsonl"
+            else
+                log_error "成本優化評估腳本不存在或無執行權限"
+                exit 1
+            fi
             ;;
         *)
             log_error "未知的評估類型: $pillar"
