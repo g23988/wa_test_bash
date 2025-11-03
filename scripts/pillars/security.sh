@@ -439,21 +439,228 @@ check_acm_certificates() {
     done
 }
 
+# 新增檢查函數
+
+check_iam_password_policy() {
+    local r="global"
+    log_info "檢查 IAM 密碼政策..."
+    policy="$(aws iam get-account-password-policy --output json 2>/dev/null || echo '{}')"
+    
+    if [[ "$policy" == "{}" ]]; then
+        emit "IAM:PasswordPolicy" "-" "$r" "FAIL" "HIGH" "No password policy configured"
+        return
+    fi
+    
+    local min_len require_symbols require_numbers require_upper require_lower max_age
+    min_len="$(echo "$policy" | jq -r '.PasswordPolicy.MinimumPasswordLength // 0')"
+    require_symbols="$(echo "$policy" | jq -r '.PasswordPolicy.RequireSymbols // false')"
+    require_numbers="$(echo "$policy" | jq -r '.PasswordPolicy.RequireNumbers // false')"
+    require_upper="$(echo "$policy" | jq -r '.PasswordPolicy.RequireUppercaseCharacters // false')"
+    require_lower="$(echo "$policy" | jq -r '.PasswordPolicy.RequireLowercaseCharacters // false')"
+    max_age="$(echo "$policy" | jq -r '.PasswordPolicy.MaxPasswordAge // 0')"
+    
+    local issues=()
+    [[ "$min_len" -lt 14 ]] && issues+=("MinLength<14")
+    [[ "$require_symbols" != "true" ]] && issues+=("NoSymbols")
+    [[ "$require_numbers" != "true" ]] && issues+=("NoNumbers")
+    [[ "$require_upper" != "true" ]] && issues+=("NoUppercase")
+    [[ "$require_lower" != "true" ]] && issues+=("NoLowercase")
+    [[ "$max_age" -eq 0 || "$max_age" -gt 90 ]] && issues+=("MaxAge>90days")
+    
+    if [[ ${#issues[@]} -gt 0 ]]; then
+        emit "IAM:PasswordPolicy" "-" "$r" "WARN" "MEDIUM" "Weak policy: ${issues[*]}"
+    else
+        emit "IAM:PasswordPolicy" "-" "$r" "OK" "MEDIUM" "Strong password policy"
+    fi
+}
+
+check_config_recorder() {
+    local region="$1"
+    log_info "檢查 AWS Config Recorder (區域: $region)..."
+    
+    recorders="$(aws configservice describe-configuration-recorders --region "$region" --output json 2>/dev/null || echo '{"ConfigurationRecorders":[]}')"
+    cnt="$(echo "$recorders" | jq '.ConfigurationRecorders|length')"
+    
+    if [[ "$cnt" -eq 0 ]]; then
+        emit "Config:Recorder" "-" "$region" "WARN" "MEDIUM" "No Config Recorder (compliance tracking disabled)"
+        return
+    fi
+    
+    status="$(aws configservice describe-configuration-recorder-status --region "$region" --output json 2>/dev/null || echo '{"ConfigurationRecordersStatus":[]}')"
+    echo "$status" | jq -c '.ConfigurationRecordersStatus[]?' | while read -r s; do
+        name="$(echo "$s" | jq -r '.name')"
+        recording="$(echo "$s" | jq -r '.recording')"
+        
+        if [[ "$recording" == "true" ]]; then
+            emit "Config:Recorder" "$name" "$region" "OK" "MEDIUM" "Recording enabled"
+        else
+            emit "Config:Recorder" "$name" "$region" "FAIL" "MEDIUM" "Recording disabled"
+        fi
+    done
+}
+
+check_guardduty() {
+    local region="$1"
+    log_info "檢查 GuardDuty (區域: $region)..."
+    
+    detectors="$(aws guardduty list-detectors --region "$region" --output json 2>/dev/null || echo '{"DetectorIds":[]}')"
+    cnt="$(echo "$detectors" | jq '.DetectorIds|length')"
+    
+    if [[ "$cnt" -eq 0 ]]; then
+        emit "GuardDuty:Enabled" "-" "$region" "WARN" "HIGH" "GuardDuty not enabled (threat detection disabled)"
+        return
+    fi
+    
+    echo "$detectors" | jq -r '.DetectorIds[]' 2>/dev/null | while read -r detector_id; do
+        [[ -z "$detector_id" ]] && continue
+        
+        details="$(aws guardduty get-detector --region "$region" --detector-id "$detector_id" --output json 2>/dev/null || echo '{}')"
+        status="$(echo "$details" | jq -r '.Status // "DISABLED"')"
+        
+        if [[ "$status" == "ENABLED" ]]; then
+            emit "GuardDuty:Enabled" "$detector_id" "$region" "OK" "HIGH" "GuardDuty enabled"
+        else
+            emit "GuardDuty:Enabled" "$detector_id" "$region" "FAIL" "HIGH" "GuardDuty disabled"
+        fi
+    done
+}
+
+check_securityhub() {
+    local region="$1"
+    log_info "檢查 Security Hub (區域: $region)..."
+    
+    hub="$(aws securityhub describe-hub --region "$region" --output json 2>/dev/null || echo '{}')"
+    
+    if [[ "$hub" == "{}" ]]; then
+        emit "SecurityHub:Enabled" "-" "$region" "WARN" "MEDIUM" "Security Hub not enabled"
+        return
+    fi
+    
+    status="$(echo "$hub" | jq -r '.HubArn // empty')"
+    if [[ -n "$status" ]]; then
+        emit "SecurityHub:Enabled" "-" "$region" "OK" "MEDIUM" "Security Hub enabled"
+    else
+        emit "SecurityHub:Enabled" "-" "$region" "WARN" "MEDIUM" "Security Hub not configured"
+    fi
+}
+
+check_vpc_flow_logs() {
+    local region="$1"
+    log_info "檢查 VPC Flow Logs (區域: $region)..."
+    
+    vpcs="$(aws ec2 describe-vpcs --region "$region" --query 'Vpcs[].VpcId' --output json 2>/dev/null || echo '[]')"
+    
+    echo "$vpcs" | jq -r '.[]' 2>/dev/null | while read -r vpc_id; do
+        [[ -z "$vpc_id" ]] && continue
+        
+        flow_logs="$(aws ec2 describe-flow-logs --region "$region" --filter "Name=resource-id,Values=$vpc_id" --output json 2>/dev/null || echo '{"FlowLogs":[]}')"
+        cnt="$(echo "$flow_logs" | jq '.FlowLogs|length')"
+        
+        if [[ "$cnt" -eq 0 ]]; then
+            emit "VPC:FlowLogs" "$vpc_id" "$region" "WARN" "MEDIUM" "No Flow Logs (network monitoring disabled)"
+        else
+            emit "VPC:FlowLogs" "$vpc_id" "$region" "OK" "MEDIUM" "Flow Logs enabled"
+        fi
+    done
+}
+
+check_secrets_manager_rotation() {
+    local region="$1"
+    log_info "檢查 Secrets Manager 輪換 (區域: $region)..."
+    
+    secrets="$(aws secretsmanager list-secrets --region "$region" --output json 2>/dev/null || echo '{"SecretList":[]}')"
+    
+    echo "$secrets" | jq -c '.SecretList[]?' | while read -r secret; do
+        name="$(echo "$secret" | jq -r '.Name')"
+        rotation_enabled="$(echo "$secret" | jq -r '.RotationEnabled // false')"
+        
+        if [[ "$rotation_enabled" == "true" ]]; then
+            emit "SecretsManager:Rotation" "$name" "$region" "OK" "MEDIUM" "Rotation enabled"
+        else
+            emit "SecretsManager:Rotation" "$name" "$region" "WARN" "MEDIUM" "Rotation not enabled"
+        fi
+    done
+}
+
+check_lambda_vpc_config() {
+    local region="$1"
+    log_info "檢查 Lambda VPC 配置 (區域: $region)..."
+    
+    functions="$(aws lambda list-functions --region "$region" --query 'Functions[].FunctionName' --output json 2>/dev/null || echo '[]')"
+    
+    echo "$functions" | jq -r '.[]' 2>/dev/null | while read -r func; do
+        [[ -z "$func" ]] && continue
+        
+        config="$(aws lambda get-function-configuration --region "$region" --function-name "$func" --output json 2>/dev/null || echo '{}')"
+        vpc_config="$(echo "$config" | jq -r '.VpcConfig.VpcId // empty')"
+        
+        # 如果 Lambda 需要訪問 VPC 資源但沒有配置 VPC，這可能是安全問題
+        # 這裡只記錄資訊，不判斷好壞
+        if [[ -n "$vpc_config" ]]; then
+            emit "Lambda:VPCConfig" "$func" "$region" "INFO" "LOW" "In VPC: $vpc_config"
+        else
+            emit "Lambda:VPCConfig" "$func" "$region" "INFO" "LOW" "Not in VPC (public internet access)"
+        fi
+    done
+}
+
+check_ec2_imdsv2() {
+    local region="$1"
+    log_info "檢查 EC2 IMDSv2 (區域: $region)..."
+    
+    instances="$(aws ec2 describe-instances --region "$region" --query 'Reservations[].Instances[]' --output json 2>/dev/null || echo '[]')"
+    
+    echo "$instances" | jq -c '.[]?' | while read -r instance; do
+        id="$(echo "$instance" | jq -r '.InstanceId')"
+        imds="$(echo "$instance" | jq -r '.MetadataOptions.HttpTokens // "optional"')"
+        
+        if [[ "$imds" == "required" ]]; then
+            emit "EC2:IMDSv2" "$id" "$region" "OK" "MEDIUM" "IMDSv2 required (secure)"
+        else
+            emit "EC2:IMDSv2" "$id" "$region" "WARN" "MEDIUM" "IMDSv2 not required (consider enforcing)"
+        fi
+    done
+}
+
+check_waf() {
+    local region="$1"
+    log_info "檢查 WAF (區域: $region)..."
+    
+    # WAFv2 (regional)
+    web_acls="$(aws wafv2 list-web-acls --region "$region" --scope REGIONAL --output json 2>/dev/null || echo '{"WebACLs":[]}')"
+    cnt="$(echo "$web_acls" | jq '.WebACLs|length')"
+    
+    if [[ "$cnt" -eq 0 ]]; then
+        emit "WAF:WebACL" "-" "$region" "INFO" "LOW" "No regional WAF WebACLs (consider for ALB/API Gateway protection)"
+    else
+        emit "WAF:WebACL" "-" "$region" "OK" "LOW" "Regional WAF enabled, count=$cnt"
+    fi
+}
+
 # ========== 執行檢查 ==========
 
 log_info "執行全域安全檢查..."
 check_root_mfa
 check_iam_users_mfa_and_keys
+check_iam_password_policy
 check_iam_policy_wildcards
 check_s3_security
 check_cloudfront_security
 
 log_info "執行區域性安全檢查 (區域: $REGION)..."
 check_cloudtrail "$REGION"
+check_config_recorder "$REGION"
+check_guardduty "$REGION"
+check_securityhub "$REGION"
 check_ebs_encryption "$REGION"
 check_security_groups "$REGION"
+check_vpc_flow_logs "$REGION"
 check_rds_security "$REGION"
 check_kms_rotation "$REGION"
+check_secrets_manager_rotation "$REGION"
+check_lambda_vpc_config "$REGION"
+check_ec2_imdsv2 "$REGION"
+check_waf "$REGION"
 check_acm_certificates "$REGION"
 
 # ========== 生成報告 ==========
@@ -501,17 +708,34 @@ cat >> "$OUTPUT_FILE" << EOF
   "recommendations": [
     "啟用 Root 帳戶 MFA 多重身份驗證",
     "為所有 IAM 使用者啟用 MFA",
-    "定期輪換 IAM 存取金鑰 (建議 90 天內)",
+    "設定強密碼政策（最少 14 字元，包含大小寫、數字、符號）",
+    "定期輪換 IAM 存取金鑰（建議 90 天內）",
     "檢查並移除 IAM 政策中的萬用字元權限",
+    "實施最小權限原則（Least Privilege）",
     "啟用 S3 儲存桶公開存取封鎖",
-    "為 S3 儲存桶啟用預設加密",
+    "為 S3 儲存桶啟用預設加密（SSE-S3 或 SSE-KMS）",
+    "使用 S3 Object Ownership 設定為 BucketOwnerEnforced",
     "檢查並修正過於寬鬆的 Security Group 規則",
+    "避免對 0.0.0.0/0 開放管理埠（22, 3389）",
     "啟用 EBS 預設加密",
     "啟用 CloudTrail 並確保記錄檔驗證",
+    "啟用 AWS Config 進行合規性追蹤",
+    "啟用 GuardDuty 進行威脅偵測",
+    "啟用 Security Hub 進行集中安全管理",
+    "為所有 VPC 啟用 Flow Logs",
     "為 RDS 執行個體啟用儲存加密",
+    "避免 RDS 執行個體公開存取",
     "啟用 KMS 金鑰自動輪換",
+    "為 Secrets Manager 密鑰啟用自動輪換",
     "監控 ACM 憑證到期時間",
-    "CloudFront 分發使用 HTTPS-only 和現代 TLS 版本"
+    "CloudFront 分發使用 HTTPS-only 和現代 TLS 版本（>= TLSv1.2_2019）",
+    "為 EC2 實例強制使用 IMDSv2",
+    "考慮為面向公眾的應用程式啟用 WAF",
+    "定期審查和更新安全群組規則",
+    "使用 VPC Endpoints 減少公開網路暴露",
+    "啟用 CloudWatch Logs 加密",
+    "實施資料分類和標籤策略",
+    "定期進行安全審計和滲透測試"
   ]
 }
 EOF
