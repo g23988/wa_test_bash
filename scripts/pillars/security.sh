@@ -335,14 +335,13 @@ check_security_groups() {
 check_rds_security() {
     local region="$1"
     log_info "檢查 RDS 安全配置 (區域: $region)..."
-    dbs="$(aws_try "$region" aws rds describe-db-instances --output json 2>/dev/null || echo '{}')"
-    if [[ "$dbs" == __ERROR__* ]] || [[ "$dbs" == "{}" ]]; then
-        emit "RDS:PubliclyAccessible" "-" "$region" "INFO" "MEDIUM" "AccessDenied or no RDS instances"
-        return
-    fi
+    
+    local dbs
+    dbs="$(aws rds describe-db-instances --region "$region" --output json 2>/dev/null || echo '{"DBInstances":[]}')"
     
     local db_count
     db_count="$(echo "$dbs" | jq '.DBInstances | length' 2>/dev/null || echo 0)"
+    
     if [[ "$db_count" -eq 0 ]]; then
         emit "RDS:PubliclyAccessible" "-" "$region" "INFO" "LOW" "No RDS instances found"
         return
@@ -351,39 +350,48 @@ check_rds_security() {
     echo "$dbs" | jq -c '.DBInstances[]?' 2>/dev/null | while read -r db; do
         [[ -z "$db" ]] && continue
         
+        local id pub enc
         id="$(echo "$db" | jq -r '.DBInstanceIdentifier' 2>/dev/null || echo "unknown")"
         pub="$(echo "$db" | jq -r '.PubliclyAccessible' 2>/dev/null || echo "false")"
         enc="$(echo "$db" | jq -r '.StorageEncrypted' 2>/dev/null || echo "false")"
         
-        [[ "$pub" == "true" ]] && emit "RDS:PubliclyAccessible" "$id" "$region" "WARN" "MEDIUM" "PubliclyAccessible=true"
-        [[ "$enc" != "true" ]] && emit "RDS:StorageEncrypted" "$id" "$region" "FAIL" "HIGH" "StorageEncrypted=false"
+        if [[ "$pub" == "true" ]]; then
+            emit "RDS:PubliclyAccessible" "$id" "$region" "WARN" "MEDIUM" "PubliclyAccessible=true"
+        fi
+        
+        if [[ "$enc" != "true" ]]; then
+            emit "RDS:StorageEncrypted" "$id" "$region" "FAIL" "HIGH" "StorageEncrypted=false"
+        fi
     done
 }
 
 check_kms_rotation() {
     local region="$1"
     log_info "檢查 KMS 金鑰輪換 (區域: $region)..."
-    keys="$(aws_try "$region" aws kms list-keys --query 'Keys[].KeyId' --output json 2>/dev/null || echo '[]')"
-    if [[ "$keys" == __ERROR__* ]] || [[ "$keys" == "[]" ]]; then
-        emit "KMS:RotationEnabled" "-" "$region" "INFO" "LOW" "AccessDenied or no KMS keys"
-        return
-    fi
+    
+    local keys
+    keys="$(aws kms list-keys --region "$region" --query 'Keys[].KeyId' --output json 2>/dev/null || echo '[]')"
     
     local key_count
     key_count="$(echo "$keys" | jq 'length' 2>/dev/null || echo 0)"
+    
     if [[ "$key_count" -eq 0 ]]; then
-        emit "KMS:RotationEnabled" "-" "$region" "INFO" "LOW" "No KMS keys found"
+        emit "KMS:RotationEnabled" "-" "$region" "INFO" "LOW" "No customer managed KMS keys found"
         return
     fi
     
     echo "$keys" | jq -r '.[]' 2>/dev/null | while read -r k; do
         [[ -z "$k" ]] && continue
-        m="$(aws_try "$region" aws kms get-key-rotation-status --key-id "$k" --query 'KeyRotationEnabled' --output text 2>/dev/null || echo "__ERROR__")"
-        if [[ "$m" == __ERROR__* ]]; then
-            emit "KMS:RotationEnabled" "$k" "$region" "INFO" "LOW" "No permission"
+        
+        local rotation_status
+        rotation_status="$(aws kms get-key-rotation-status --region "$region" --key-id "$k" --query 'KeyRotationEnabled' --output text 2>/dev/null || echo "unknown")"
+        
+        if [[ "$rotation_status" == "unknown" ]]; then
+            emit "KMS:RotationEnabled" "$k" "$region" "INFO" "LOW" "No permission or AWS managed key"
+        elif [[ "$rotation_status" == "true" || "$rotation_status" == "True" ]]; then
+            emit "KMS:RotationEnabled" "$k" "$region" "OK" "LOW" "Enabled"
         else
-            [[ "$m" == "true" ]] && emit "KMS:RotationEnabled" "$k" "$region" "OK" "LOW" "Enabled" \
-                || emit "KMS:RotationEnabled" "$k" "$region" "WARN" "LOW" "Not enabled"
+            emit "KMS:RotationEnabled" "$k" "$region" "WARN" "LOW" "Not enabled"
         fi
     done
 }
@@ -391,15 +399,14 @@ check_kms_rotation() {
 check_acm_certificates() {
     local region="$1"
     log_info "檢查 ACM 憑證到期 (區域: $region)..."
-    cert_arns="$(aws_try "$region" aws acm list-certificates --certificate-statuses ISSUED PENDING_VALIDATION INACTIVE EXPIRED \
+    
+    local cert_arns
+    cert_arns="$(aws acm list-certificates --region "$region" --certificate-statuses ISSUED PENDING_VALIDATION INACTIVE EXPIRED \
         --query 'CertificateSummaryList[].CertificateArn' --output json 2>/dev/null || echo '[]')"
-    if [[ "$cert_arns" == __ERROR__* ]] || [[ "$cert_arns" == "[]" ]]; then
-        emit "ACM:Expiry" "-" "$region" "INFO" "MEDIUM" "AccessDenied or ACM unsupported in region"
-        return
-    fi
     
     local cert_count
     cert_count="$(echo "$cert_arns" | jq 'length' 2>/dev/null || echo 0)"
+    
     if [[ "$cert_count" -eq 0 ]]; then
         emit "ACM:Expiry" "-" "$region" "INFO" "LOW" "No ACM certificates found"
         return
@@ -407,12 +414,16 @@ check_acm_certificates() {
     
     echo "$cert_arns" | jq -r '.[]' 2>/dev/null | while read -r arn; do
         [[ -z "$arn" ]] && continue
-        desc="$(aws_try "$region" aws acm describe-certificate --certificate-arn "$arn" --output json 2>/dev/null || echo '{}')"
-        if [[ "$desc" == __ERROR__* ]] || [[ "$desc" == "{}" ]]; then
-            emit "ACM:Expiry" "$arn" "$region" "INFO" "LOW" "No permission to describe-certificate"
+        
+        local desc
+        desc="$(aws acm describe-certificate --region "$region" --certificate-arn "$arn" --output json 2>/dev/null || echo '{}')"
+        
+        if [[ "$desc" == "{}" ]]; then
+            emit "ACM:Expiry" "$arn" "$region" "INFO" "LOW" "No permission to describe certificate"
             continue
         fi
         
+        local not_after status domain
         not_after="$(echo "$desc" | jq -r '.Certificate.NotAfter' 2>/dev/null || echo "")"
         status="$(echo "$desc" | jq -r '.Certificate.Status' 2>/dev/null || echo "UNKNOWN")"
         domain="$(echo "$desc" | jq -r '.Certificate.DomainName' 2>/dev/null || echo "unknown")"
