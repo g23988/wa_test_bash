@@ -927,6 +927,11 @@ CHECK_VPC_PEERING="${CHECK_VPC_PEERING:-1}"             # VPC Peering 清單
 CHECK_TGW="${CHECK_TGW:-1}"                             # Transit Gateway 摘要
 CHECK_NAT="${CHECK_NAT:-1}"                             # NAT Gateway 數量與狀態
 CHECK_VPCE="${CHECK_VPCE:-1}"                           # VPC Endpoint 狀態
+CHECK_DIRECT_CONNECT="${CHECK_DIRECT_CONNECT:-1}"       # Direct Connect 連接檢查
+CHECK_GLOBAL_ACCELERATOR="${CHECK_GLOBAL_ACCELERATOR:-1}" # Global Accelerator 檢查
+CHECK_S3_TRANSFER_ACCEL="${CHECK_S3_TRANSFER_ACCEL:-1}" # S3 Transfer Acceleration 檢查
+CHECK_INTER_REGION="${CHECK_INTER_REGION:-1}"           # 跨區域流量檢查
+CHECK_CF_CACHE="${CHECK_CF_CACHE:-1}"                   # CloudFront 快取配置檢查
 
 check_cloudfront_dt() {
     local r="global"
@@ -1133,16 +1138,206 @@ check_vpce_dt() {
     emit "DT:VPCETypeCount" "Interface" "$region" "INFO" "LOW" "count=${iface}"
     emit "DT:VPCETypeCount" "Gateway" "$region" "INFO" "LOW" "count=${gw}"
     emit "DT:VPCETypeCount" "GatewayLoadBalancer" "$region" "INFO" "LOW" "count=${gwlb}"
+    
+    # 檢查常見服務的 VPC Endpoint 使用情況
+    local s3_vpce ddb_vpce
+    s3_vpce="$(echo "$e" | jq '[.VpcEndpoints[]?|select(.ServiceName|contains("s3"))]|length')"
+    ddb_vpce="$(echo "$e" | jq '[.VpcEndpoints[]?|select(.ServiceName|contains("dynamodb"))]|length')"
+    
+    if [[ "$s3_vpce" -eq 0 ]]; then
+        emit "DT:VPCEMissing" "S3" "$region" "WARN" "MEDIUM" "No S3 Gateway Endpoint (traffic via NAT/IGW incurs data transfer costs)"
+    fi
+    
+    if [[ "$ddb_vpce" -eq 0 ]]; then
+        emit "DT:VPCEMissing" "DynamoDB" "$region" "INFO" "LOW" "No DynamoDB Gateway Endpoint (consider if using DDB from VPC)"
+    fi
+}
+
+check_direct_connect() {
+    local region="$1"
+    [[ "$CHECK_DIRECT_CONNECT" != "1" ]] && return
+    
+    log_info "檢查 Direct Connect 連接 (區域: $region)..."
+    local conns
+    conns="$(aws_try "$region" aws directconnect describe-connections --output json || true)"
+    if [[ "$conns" == __ERROR__* || -z "$conns" ]]; then
+        emit "DT:DirectConnectListError" "-" "$region" "INFO" "LOW" "${conns:0:200}"
+        return
+    fi
+    
+    local cnt
+    cnt="$(echo "$conns" | jq '.connections|length')"
+    emit "DT:DirectConnectCount" "-" "$region" "INFO" "LOW" "count=${cnt}"
+    
+    echo "$conns" | jq -c '.connections[]?' | while read -r conn; do
+        local id name state bw location
+        id="$(echo "$conn" | jq -r '.connectionId')"
+        name="$(echo "$conn" | jq -r '.connectionName')"
+        state="$(echo "$conn" | jq -r '.connectionState')"
+        bw="$(echo "$conn" | jq -r '.bandwidth')"
+        location="$(echo "$conn" | jq -r '.location')"
+        
+        local status_severity="INFO"
+        [[ "$state" != "available" ]] && status_severity="WARN"
+        
+        emit "DT:DirectConnect" "$id($name)" "$region" "$status_severity" "LOW" "State=${state} Bandwidth=${bw} Location=${location}"
+    done
+    
+    # 檢查 Virtual Interfaces
+    local vifs
+    vifs="$(aws_try "$region" aws directconnect describe-virtual-interfaces --output json || true)"
+    if [[ "$vifs" != __ERROR__* && -n "$vifs" ]]; then
+        local vif_cnt
+        vif_cnt="$(echo "$vifs" | jq '.virtualInterfaces|length')"
+        emit "DT:DirectConnectVIFCount" "-" "$region" "INFO" "LOW" "count=${vif_cnt}"
+    fi
+}
+
+check_global_accelerator() {
+    local r="global"
+    [[ "$CHECK_GLOBAL_ACCELERATOR" != "1" ]] && return
+    
+    # Global Accelerator 是全域服務，只在 us-west-2 檢查
+    [[ "$REGION" != "us-west-2" ]] && return
+    
+    log_info "檢查 Global Accelerator..."
+    local accs
+    accs="$(aws globalaccelerator list-accelerators --region us-west-2 --output json 2>/dev/null || echo '{"Accelerators":[]}')"
+    
+    local cnt
+    cnt="$(echo "$accs" | jq '.Accelerators|length')"
+    emit "DT:GlobalAcceleratorCount" "-" "$r" "INFO" "LOW" "count=${cnt}"
+    
+    echo "$accs" | jq -c '.Accelerators[]?' | while read -r acc; do
+        local arn name status enabled
+        arn="$(echo "$acc" | jq -r '.AcceleratorArn')"
+        name="$(echo "$acc" | jq -r '.Name')"
+        status="$(echo "$acc" | jq -r '.Status')"
+        enabled="$(echo "$acc" | jq -r '.Enabled')"
+        
+        emit "DT:GlobalAccelerator" "$name" "$r" "INFO" "LOW" "Status=${status} Enabled=${enabled} (fixed hourly + data transfer costs)"
+    done
+}
+
+check_s3_transfer_acceleration() {
+    local r="global"
+    [[ "$CHECK_S3_TRANSFER_ACCEL" != "1" ]] && return
+    
+    # 只在主要區域執行
+    [[ "$REGION" != "us-east-1" ]] && return
+    
+    log_info "檢查 S3 Transfer Acceleration..."
+    local buckets
+    buckets="$(aws s3api list-buckets --output json 2>/dev/null || echo '{"Buckets":[]}')"
+    
+    echo "$buckets" | jq -r '.Buckets[]?.Name' | while read -r b; do
+        local acc
+        acc="$(aws s3api get-bucket-accelerate-configuration --bucket "$b" --output json 2>/dev/null || echo '{}')"
+        local status
+        status="$(echo "$acc" | jq -r '.Status // "Suspended"')"
+        
+        if [[ "$status" == "Enabled" ]]; then
+            emit "DT:S3TransferAcceleration" "$b" "$r" "WARN" "MEDIUM" "Transfer Acceleration enabled (additional per-GB charges; evaluate if needed)"
+        fi
+    done
+}
+
+check_inter_region_traffic() {
+    local region="$1"
+    [[ "$CHECK_INTER_REGION" != "1" ]] && return
+    
+    log_info "檢查跨區域流量風險 (區域: $region)..."
+    
+    # 檢查 EC2 實例是否連接到其他區域的資源
+    local instances
+    instances="$(aws_try "$region" aws ec2 describe-instances --query 'Reservations[].Instances[]' --output json || true)"
+    if [[ "$instances" == __ERROR__* || -z "$instances" ]]; then
+        return
+    fi
+    
+    # 檢查 RDS 跨區域讀取副本
+    local rds_replicas
+    rds_replicas="$(aws_try "$region" aws rds describe-db-instances --query 'DBInstances[?ReadReplicaSourceDBInstanceIdentifier!=`null`]' --output json || true)"
+    if [[ "$rds_replicas" != __ERROR__* && -n "$rds_replicas" ]]; then
+        echo "$rds_replicas" | jq -c '.[]?' | while read -r replica; do
+            local id source
+            id="$(echo "$replica" | jq -r '.DBInstanceIdentifier')"
+            source="$(echo "$replica" | jq -r '.ReadReplicaSourceDBInstanceIdentifier')"
+            
+            # 檢查 source 是否包含不同區域
+            if [[ "$source" == *":"* ]]; then
+                local source_region
+                source_region="$(echo "$source" | cut -d: -f4)"
+                if [[ "$source_region" != "$region" ]]; then
+                    emit "DT:RDSCrossRegionReplica" "$id" "$region" "WARN" "MEDIUM" "Cross-region read replica from ${source_region} (data transfer charges apply)"
+                fi
+            fi
+        done
+    fi
+    
+    # 檢查 ElastiCache 全域資料存儲
+    local elasticache_global
+    elasticache_global="$(aws_try "$region" aws elasticache describe-global-replication-groups --output json || true)"
+    if [[ "$elasticache_global" != __ERROR__* && -n "$elasticache_global" ]]; then
+        local cnt
+        cnt="$(echo "$elasticache_global" | jq '.GlobalReplicationGroups|length')"
+        if [[ "$cnt" -gt 0 ]]; then
+            emit "DT:ElastiCacheGlobal" "-" "$region" "INFO" "MEDIUM" "Global datastore count=${cnt} (cross-region replication incurs data transfer)"
+        fi
+    fi
+}
+
+check_cloudfront_cache_behavior() {
+    local r="global"
+    [[ "$CHECK_CF_CACHE" != "1" ]] && return
+    
+    # 只在主要區域執行
+    [[ "$REGION" != "us-east-1" ]] && return
+    
+    log_info "檢查 CloudFront 快取配置..."
+    local dists
+    dists="$(aws_try "$r" aws cloudfront list-distributions --output json || true)"
+    if [[ "$dists" == __ERROR__* || -z "$dists" ]]; then
+        return
+    fi
+    
+    echo "$dists" | jq -c '.DistributionList.Items[]?' | while read -r d; do
+        local id domain
+        id="$(echo "$d" | jq -r '.Id')"
+        domain="$(echo "$d" | jq -r '.DomainName')"
+        
+        # 檢查預設快取行為的 TTL 設定
+        local min_ttl default_ttl max_ttl
+        min_ttl="$(echo "$d" | jq -r '.DefaultCacheBehavior.MinTTL // 0')"
+        default_ttl="$(echo "$d" | jq -r '.DefaultCacheBehavior.DefaultTTL // 86400')"
+        max_ttl="$(echo "$d" | jq -r '.DefaultCacheBehavior.MaxTTL // 31536000')"
+        
+        if [[ "$min_ttl" -eq 0 && "$default_ttl" -lt 3600 ]]; then
+            emit "DT:CloudFrontCacheTTL" "$id($domain)" "$r" "WARN" "MEDIUM" "Low cache TTL (MinTTL=${min_ttl} DefaultTTL=${default_ttl}); consider increasing to reduce origin requests"
+        fi
+        
+        # 檢查是否啟用壓縮
+        local compress
+        compress="$(echo "$d" | jq -r '.DefaultCacheBehavior.Compress // false')"
+        if [[ "$compress" != "true" ]]; then
+            emit "DT:CloudFrontCompression" "$id($domain)" "$r" "WARN" "LOW" "Compression not enabled; enable to reduce data transfer"
+        fi
+    done
 }
 
 log_info "執行資料傳輸成本檢查 (區域: $REGION)..."
 check_cloudfront_dt
+check_cloudfront_cache_behavior
 check_s3_replication_dt
+check_s3_transfer_acceleration
 check_elb2_crosszone_dt "$REGION"
 check_vpc_peering_dt "$REGION"
 check_tgw_dt "$REGION"
 check_nat_dt "$REGION"
 check_vpce_dt "$REGION"
+check_direct_connect "$REGION"
+check_global_accelerator
+check_inter_region_traffic "$REGION"
 
 # ========== 儲存成本檢查 ==========
 
@@ -1370,21 +1565,26 @@ cat >> "$OUTPUT_FILE" << EOF
     "檢查 Load Balancer 的目標群組使用情況",
     "評估 NAT Gateway 的使用模式和替代方案",
     "調整 CloudFront 價格等級以降低分發成本",
+    "啟用 CloudFront 壓縮以減少資料傳輸量",
+    "優化 CloudFront 快取 TTL 設定以減少 origin 請求",
     "清理閒置的 Network Load Balancer",
-    "為 VPC Endpoints 啟用私有 DNS 以減少 NAT 流量",
-    "檢查 Transit Gateway 連接的必要性",
-    "    "    "使用 VPC Endpoints 減少 NAT Gateway 流量成本",
-    "為 CloudWatch Logs 設定適當的保留期限",
+    "為 VPC 建立 S3 和 DynamoDB Gateway Endpoints（免費）",
+    "使用 VPC Interface Endpoints 取代 NAT Gateway 流量",
+    "檢查 Transit Gateway 連接的必要性和使用率",
+    "評估 Direct Connect 使用效益（大量穩定流量）",
+    "檢查 S3 Transfer Acceleration 是否必要",
+    "避免不必要的跨區域資料傳輸",
+    "優化 RDS 跨區域讀取副本配置",
+    "評估 Global Accelerator 的使用效益",
+    "使用 CloudFront 而非 S3 直接分發靜態內容",
     "清理不必要的 CloudWatch Alarms",
     "優化 Kinesis Data Streams 的 Shard 配置",
     "檢查並清理非活躍的 Kinesis Streams",
-    "    "縮短過長的日誌和資料保留期",
-    "調整 CloudFront 價格等級以降低分發成本",
+    "縮短過長的日誌和資料保留期",
     "檢查 S3 跨區複寫的必要性",
     "優化 NLB Cross-Zone Load Balancing 配置",
     "評估 VPC Peering 和 Transit Gateway 的使用",
-    "使用 VPC Endpoints 減少 NAT Gateway 資料傳輸成本",
-    "監控跨 AZ 和跨區域的資料流量成本""",
+    "監控跨 AZ 和跨區域的資料流量成本",
     "為 S3 儲存桶設定生命週期規則以降低儲存成本",
     "清理 S3 版本控制儲存桶的舊版本物件",
     "刪除未掛載的 EBS 磁碟區",
