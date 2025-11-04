@@ -81,6 +81,15 @@ print(int((datetime.datetime.now(datetime.timezone.utc)-dt).total_seconds()//864
 PY
 }
 
+days_until_iso() {
+    python3 - <<'PY' "$1"
+import sys,datetime
+s=sys.argv[1]
+dt=datetime.datetime.fromisoformat(s.replace('Z','+00:00'))
+print(int((dt-datetime.datetime.now(datetime.timezone.utc)).total_seconds()//86400))
+PY
+}
+
 # 初始化詳細輸出文件
 echo "" > "$DETAILED_OUTPUT_FILE"
 
@@ -108,12 +117,20 @@ check_cloudfront_priceclass() {
 check_s3_lifecycle_global() {
     local r="global"
     log_info "檢查 S3 生命週期政策..."
+    
+    local buckets
     buckets="$(aws s3api list-buckets --query 'Buckets[].Name' --output json 2>/dev/null || echo '[]')"
     
-    for b in $(echo "$buckets" | jq -r '.[]'); do
+    echo "$buckets" | jq -r '.[]' 2>/dev/null | while read -r b; do
+        [[ -z "$b" ]] && continue
+        
+        local lc rules
         lc="$(aws s3api get-bucket-lifecycle-configuration --bucket "$b" --output json 2>/dev/null || echo '{}')"
         rules="$(echo "$lc" | jq -r '.Rules | length' 2>/dev/null || echo 0)"
-        [[ "$rules" -eq 0 ]] && emit "S3:Lifecycle" "$b" "$r" "WARN" "MEDIUM" "No lifecycle rules (consider IA/Glacier/version cleanup)"
+        
+        if [[ "$rules" -eq 0 ]]; then
+            emit "S3:Lifecycle" "$b" "$r" "WARN" "MEDIUM" "No lifecycle rules (consider IA/Glacier/version cleanup)"
+        fi
     done
 }
 
@@ -302,6 +319,308 @@ check_cw_logs_retention() {
     done
 }
 
+# ========== 新增成本優化檢查 ==========
+
+check_ec2_spot_usage() {
+    local region="$1"
+    log_info "檢查 EC2 Spot Instance 使用情況 (區域: $region)..."
+    
+    local instances
+    instances="$(aws ec2 describe-instances --region "$region" --query 'Reservations[].Instances[]' --output json 2>/dev/null || echo '[]')"
+    
+    local total_count spot_count ondemand_count
+    total_count="$(echo "$instances" | jq '[.[] | select(.State.Name=="running")] | length')"
+    spot_count="$(echo "$instances" | jq '[.[] | select(.State.Name=="running" and .InstanceLifecycle=="spot")] | length')"
+    ondemand_count=$((total_count - spot_count))
+    
+    if [[ "$total_count" -gt 0 ]]; then
+        local spot_percentage
+        spot_percentage=$((spot_count * 100 / total_count))
+        emit "EC2:SpotUsage" "-" "$region" "INFO" "MEDIUM" "Total=${total_count} Spot=${spot_count} OnDemand=${ondemand_count} SpotPercentage=${spot_percentage}%"
+        
+        if [[ "$spot_percentage" -lt 20 && "$ondemand_count" -gt 5 ]]; then
+            emit "EC2:SpotOpportunity" "-" "$region" "WARN" "MEDIUM" "Low Spot usage (${spot_percentage}%); consider Spot for fault-tolerant workloads"
+        fi
+    fi
+}
+
+check_reserved_instances() {
+    local region="$1"
+    log_info "檢查 Reserved Instances 使用情況 (區域: $region)..."
+    
+    local ris
+    ris="$(aws ec2 describe-reserved-instances --region "$region" --filters Name=state,Values=active --output json 2>/dev/null || echo '{"ReservedInstances":[]}')"
+    
+    local ri_count
+    ri_count="$(echo "$ris" | jq '.ReservedInstances | length')"
+    
+    if [[ "$ri_count" -gt 0 ]]; then
+        emit "EC2:ReservedInstances" "-" "$region" "INFO" "LOW" "Active RIs count=${ri_count}"
+        
+        # 檢查即將到期的 RI
+        echo "$ris" | jq -c '.ReservedInstances[]?' | while read -r ri; do
+            local id end_date instance_type
+            id="$(echo "$ri" | jq -r '.ReservedInstancesId')"
+            end_date="$(echo "$ri" | jq -r '.End')"
+            instance_type="$(echo "$ri" | jq -r '.InstanceType')"
+            
+            local days_until
+            days_until="$(days_until_iso "$end_date" 2>/dev/null || echo 999)"
+            
+            if [[ "$days_until" -le 30 && "$days_until" -ge 0 ]]; then
+                emit "EC2:RIExpiring" "$id($instance_type)" "$region" "WARN" "MEDIUM" "RI expiring in ${days_until} days"
+            fi
+        done
+    else
+        emit "EC2:ReservedInstances" "-" "$region" "INFO" "LOW" "No active RIs (consider for stable workloads)"
+    fi
+}
+
+check_savings_plans() {
+    local r="global"
+    log_info "檢查 Savings Plans..."
+    
+    local plans
+    plans="$(aws savingsplans describe-savings-plans --filters name=state,values=active --output json 2>/dev/null || echo '{"savingsPlans":[]}')"
+    
+    local plan_count
+    plan_count="$(echo "$plans" | jq '.savingsPlans | length')"
+    
+    if [[ "$plan_count" -gt 0 ]]; then
+        emit "SavingsPlans:Active" "-" "$r" "INFO" "LOW" "Active Savings Plans count=${plan_count}"
+    else
+        emit "SavingsPlans:Active" "-" "$r" "INFO" "MEDIUM" "No active Savings Plans (consider for predictable usage)"
+    fi
+}
+
+check_ecs_fargate_spot() {
+    local region="$1"
+    log_info "檢查 ECS Fargate Spot 使用 (區域: $region)..."
+    
+    local clusters
+    clusters="$(aws ecs list-clusters --region "$region" --output json 2>/dev/null || echo '{"clusterArns":[]}')"
+    
+    echo "$clusters" | jq -r '.clusterArns[]?' | while read -r cluster_arn; do
+        [[ -z "$cluster_arn" ]] && continue
+        
+        local services
+        services="$(aws ecs list-services --region "$region" --cluster "$cluster_arn" --output json 2>/dev/null || echo '{"serviceArns":[]}')"
+        
+        echo "$services" | jq -r '.serviceArns[]?' | while read -r service_arn; do
+            [[ -z "$service_arn" ]] && continue
+            
+            local service_details
+            service_details="$(aws ecs describe-services --region "$region" --cluster "$cluster_arn" --services "$service_arn" --output json 2>/dev/null || echo '{"services":[]}')"
+            
+            local capacity_providers
+            capacity_providers="$(echo "$service_details" | jq -r '.services[0].capacityProviderStrategy[]?.capacityProvider' 2>/dev/null || echo "")"
+            
+            if [[ "$capacity_providers" == *"FARGATE_SPOT"* ]]; then
+                emit "ECS:FargateSpot" "$service_arn" "$region" "OK" "LOW" "Using Fargate Spot"
+            elif [[ "$capacity_providers" == *"FARGATE"* ]]; then
+                emit "ECS:FargateSpot" "$service_arn" "$region" "INFO" "LOW" "Using Fargate only (consider Fargate Spot for fault-tolerant tasks)"
+            fi
+        done
+    done
+}
+
+check_eks_node_groups() {
+    local region="$1"
+    log_info "檢查 EKS Node Groups 配置 (區域: $region)..."
+    
+    local clusters
+    clusters="$(aws eks list-clusters --region "$region" --output json 2>/dev/null || echo '{"clusters":[]}')"
+    
+    echo "$clusters" | jq -r '.clusters[]?' | while read -r cluster_name; do
+        [[ -z "$cluster_name" ]] && continue
+        
+        local nodegroups
+        nodegroups="$(aws eks list-nodegroups --region "$region" --cluster-name "$cluster_name" --output json 2>/dev/null || echo '{"nodegroups":[]}')"
+        
+        echo "$nodegroups" | jq -r '.nodegroups[]?' | while read -r ng_name; do
+            [[ -z "$ng_name" ]] && continue
+            
+            local ng_details
+            ng_details="$(aws eks describe-nodegroup --region "$region" --cluster-name "$cluster_name" --nodegroup-name "$ng_name" --output json 2>/dev/null || echo '{}')"
+            
+            local capacity_type instance_types
+            capacity_type="$(echo "$ng_details" | jq -r '.nodegroup.capacityType // "ON_DEMAND"')"
+            instance_types="$(echo "$ng_details" | jq -r '.nodegroup.instanceTypes[]?' | tr '\n' ',' | sed 's/,$//')"
+            
+            if [[ "$capacity_type" == "SPOT" ]]; then
+                emit "EKS:NodeGroupSpot" "$cluster_name/$ng_name" "$region" "OK" "LOW" "Using Spot instances"
+            else
+                emit "EKS:NodeGroupSpot" "$cluster_name/$ng_name" "$region" "INFO" "LOW" "Using On-Demand (${instance_types}); consider Spot for cost savings"
+            fi
+        done
+    done
+}
+
+check_lambda_memory_optimization() {
+    local region="$1"
+    log_info "檢查 Lambda 記憶體配置優化 (區域: $region)..."
+    
+    local functions
+    functions="$(aws lambda list-functions --region "$region" --query 'Functions[].FunctionName' --output json 2>/dev/null || echo '[]')"
+    
+    echo "$functions" | jq -r '.[]' 2>/dev/null | while read -r func; do
+        [[ -z "$func" ]] && continue
+        
+        local config
+        config="$(aws lambda get-function-configuration --region "$region" --function-name "$func" --output json 2>/dev/null || echo '{}')"
+        
+        local memory timeout runtime
+        memory="$(echo "$config" | jq -r '.MemorySize // 128')"
+        timeout="$(echo "$config" | jq -r '.Timeout // 3')"
+        runtime="$(echo "$config" | jq -r '.Runtime // "unknown"')"
+        
+        # 檢查是否使用預設記憶體配置
+        if [[ "$memory" -eq 128 ]]; then
+            emit "Lambda:MemoryOptimization" "$func" "$region" "INFO" "LOW" "Using default 128MB (consider Lambda Power Tuning)"
+        fi
+        
+        # 檢查高記憶體配置
+        if [[ "$memory" -ge 3008 ]]; then
+            emit "Lambda:MemoryOptimization" "$func" "$region" "WARN" "LOW" "High memory ${memory}MB (verify if needed)"
+        fi
+        
+        # 檢查長超時時間
+        if [[ "$timeout" -ge 300 ]]; then
+            emit "Lambda:Timeout" "$func" "$region" "WARN" "LOW" "Long timeout ${timeout}s (consider async patterns or Step Functions)"
+        fi
+    done
+}
+
+check_api_gateway_caching() {
+    local region="$1"
+    log_info "檢查 API Gateway 快取配置 (區域: $region)..."
+    
+    local apis
+    apis="$(aws apigateway get-rest-apis --region "$region" --output json 2>/dev/null || echo '{"items":[]}')"
+    
+    echo "$apis" | jq -c '.items[]?' | while read -r api; do
+        local api_id api_name
+        api_id="$(echo "$api" | jq -r '.id')"
+        api_name="$(echo "$api" | jq -r '.name')"
+        
+        local stages
+        stages="$(aws apigateway get-stages --region "$region" --rest-api-id "$api_id" --output json 2>/dev/null || echo '{"item":[]}')"
+        
+        echo "$stages" | jq -c '.item[]?' | while read -r stage; do
+            local stage_name cache_enabled
+            stage_name="$(echo "$stage" | jq -r '.stageName')"
+            cache_enabled="$(echo "$stage" | jq -r '.cacheClusterEnabled // false')"
+            
+            if [[ "$cache_enabled" == "false" ]]; then
+                emit "APIGateway:Caching" "$api_name/$stage_name" "$region" "INFO" "LOW" "Caching not enabled (consider for read-heavy APIs)"
+            else
+                local cache_size
+                cache_size="$(echo "$stage" | jq -r '.cacheClusterSize // "0.5"')"
+                emit "APIGateway:Caching" "$api_name/$stage_name" "$region" "OK" "LOW" "Caching enabled (${cache_size}GB)"
+            fi
+        done
+    done
+}
+
+check_aurora_serverless() {
+    local region="$1"
+    log_info "檢查 Aurora Serverless 使用 (區域: $region)..."
+    
+    local clusters
+    clusters="$(aws rds describe-db-clusters --region "$region" --output json 2>/dev/null || echo '{"DBClusters":[]}')"
+    
+    echo "$clusters" | jq -c '.DBClusters[]?' | while read -r cluster; do
+        local cluster_id engine engine_mode
+        cluster_id="$(echo "$cluster" | jq -r '.DBClusterIdentifier')"
+        engine="$(echo "$cluster" | jq -r '.Engine')"
+        engine_mode="$(echo "$cluster" | jq -r '.EngineMode // "provisioned"')"
+        
+        if [[ "$engine" == aurora* ]]; then
+            if [[ "$engine_mode" == "serverless" ]]; then
+                emit "Aurora:Serverless" "$cluster_id" "$region" "OK" "LOW" "Using Serverless (cost-effective for variable workloads)"
+            elif [[ "$engine_mode" == "provisioned" ]]; then
+                emit "Aurora:Serverless" "$cluster_id" "$region" "INFO" "LOW" "Using provisioned (consider Serverless v2 for variable workloads)"
+            fi
+        fi
+    done
+}
+
+check_elasticache_reserved_nodes() {
+    local region="$1"
+    log_info "檢查 ElastiCache Reserved Nodes (區域: $region)..."
+    
+    local reserved_nodes
+    reserved_nodes="$(aws elasticache describe-reserved-cache-nodes --region "$region" --output json 2>/dev/null || echo '{"ReservedCacheNodes":[]}')"
+    
+    local count
+    count="$(echo "$reserved_nodes" | jq '.ReservedCacheNodes | length')"
+    
+    if [[ "$count" -eq 0 ]]; then
+        # 檢查是否有運行中的節點
+        local running_nodes
+        running_nodes="$(aws elasticache describe-cache-clusters --region "$region" --output json 2>/dev/null || echo '{"CacheClusters":[]}')"
+        local running_count
+        running_count="$(echo "$running_nodes" | jq '.CacheClusters | length')"
+        
+        if [[ "$running_count" -gt 0 ]]; then
+            emit "ElastiCache:ReservedNodes" "-" "$region" "INFO" "MEDIUM" "No reserved nodes but ${running_count} running (consider RIs for stable workloads)"
+        fi
+    else
+        emit "ElastiCache:ReservedNodes" "-" "$region" "OK" "LOW" "Reserved nodes count=${count}"
+    fi
+}
+
+check_s3_intelligent_tiering() {
+    local r="global"
+    log_info "檢查 S3 Intelligent-Tiering 使用..."
+    
+    local buckets
+    buckets="$(aws s3api list-buckets --output json 2>/dev/null || echo '{"Buckets":[]}')"
+    
+    echo "$buckets" | jq -r '.Buckets[]?.Name' | while read -r bucket; do
+        [[ -z "$bucket" ]] && continue
+        
+        local it_config
+        it_config="$(aws s3api list-bucket-intelligent-tiering-configurations --bucket "$bucket" --output json 2>/dev/null || echo '{"IntelligentTieringConfigurationList":[]}')"
+        
+        local it_count
+        it_count="$(echo "$it_config" | jq '.IntelligentTieringConfigurationList | length')"
+        
+        if [[ "$it_count" -eq 0 ]]; then
+            emit "S3:IntelligentTiering" "$bucket" "$r" "INFO" "LOW" "Not using Intelligent-Tiering (consider for unknown access patterns)"
+        else
+            emit "S3:IntelligentTiering" "$bucket" "$r" "OK" "LOW" "Intelligent-Tiering configured"
+        fi
+    done
+}
+
+check_efs_lifecycle_policy() {
+    local region="$1"
+    log_info "檢查 EFS 生命週期政策 (區域: $region)..."
+    
+    local filesystems
+    filesystems="$(aws efs describe-file-systems --region "$region" --output json 2>/dev/null || echo '{"FileSystems":[]}')"
+    
+    echo "$filesystems" | jq -c '.FileSystems[]?' | while read -r fs; do
+        local fs_id
+        fs_id="$(echo "$fs" | jq -r '.FileSystemId')"
+        
+        local lifecycle
+        lifecycle="$(aws efs describe-lifecycle-configuration --region "$region" --file-system-id "$fs_id" --output json 2>/dev/null || echo '{"LifecyclePolicies":[]}')"
+        
+        local policy_count
+        policy_count="$(echo "$lifecycle" | jq '.LifecyclePolicies | length')"
+        
+        if [[ "$policy_count" -eq 0 ]]; then
+            emit "EFS:LifecyclePolicy" "$fs_id" "$region" "WARN" "MEDIUM" "No lifecycle policy (consider IA transition)"
+        else
+            local transition_to_ia
+            transition_to_ia="$(echo "$lifecycle" | jq -r '.LifecyclePolicies[0].TransitionToIA // "none"')"
+            emit "EFS:LifecyclePolicy" "$fs_id" "$region" "OK" "LOW" "Lifecycle policy configured (TransitionToIA=${transition_to_ia})"
+        fi
+    done
+}
+
 # EC2 閒置偵測 (可選，需要 CloudWatch 指標)
 check_ec2_idle_metrics() {
     local region="$1"
@@ -337,19 +656,46 @@ PY
 log_info "執行全域成本優化檢查..."
 check_cloudfront_priceclass
 check_s3_lifecycle_global
+check_s3_intelligent_tiering
+check_savings_plans
 
 log_info "執行區域性成本優化檢查 (區域: $REGION)..."
+
+# Compute 優化
 check_ebs_orphans_and_gp2 "$REGION"
 check_eip_unattached "$REGION"
-check_elbv2_idle "$REGION"
-check_ecr_lifecycle "$REGION"
-check_rds_storage_autoscaling "$REGION"
-check_lambda_provisioned "$REGION"
-check_dynamodb_mode_autoscaling "$REGION"
 check_ec2_graviton_candidates "$REGION"
-check_nat_gateways "$REGION"
-check_cw_logs_retention "$REGION"
+check_ec2_spot_usage "$REGION"
+check_reserved_instances "$REGION"
 check_ec2_idle_metrics "$REGION"
+
+# Container 優化
+check_ecs_fargate_spot "$REGION"
+check_eks_node_groups "$REGION"
+
+# Serverless 優化
+check_lambda_provisioned "$REGION"
+check_lambda_memory_optimization "$REGION"
+check_api_gateway_caching "$REGION"
+
+# Database 優化
+check_rds_storage_autoscaling "$REGION"
+check_aurora_serverless "$REGION"
+check_dynamodb_mode_autoscaling "$REGION"
+check_elasticache_reserved_nodes "$REGION"
+
+# Storage 優化
+check_efs_lifecycle_policy "$REGION"
+
+# Network 優化
+check_elbv2_idle "$REGION"
+check_nat_gateways "$REGION"
+
+# Monitoring 優化
+check_cw_logs_retention "$REGION"
+
+# Container Registry
+check_ecr_lifecycle "$REGION"
 
 # ========== 計算資源成本檢查 ==========
 
@@ -1542,22 +1888,29 @@ cat >> "$OUTPUT_FILE" << EOF
   "recommendations": [
     "立即刪除未使用的 EBS 磁碟區",
     "釋放未關聯的 Elastic IP 地址",
-    "將 EBS gp2 磁碟區遷移到 gp3 以節省成本",
+    "將 EBS gp2 磁碟區遷移到 gp3 以節省成本（最多節省 20%）",
     "為 S3 儲存桶設定生命週期政策",
+    "為 S3 啟用 Intelligent-Tiering 以自動優化儲存成本",
     "檢查 CloudFront 價格等級設定",
-    "為長期運行的 EC2 實例購買 Savings Plans 或 Reserved Instances",
-    "考慮將適合的工作負載遷移到 Graviton 處理器",
-    "為 CloudWatch Logs 設定適當的保留期限",
+    "為長期運行的 EC2 實例購買 Savings Plans 或 Reserved Instances（最多節省 72%）",
+    "使用 EC2 Spot Instances 處理容錯工作負載（最多節省 90%）",
+    "監控即將到期的 Reserved Instances 並評估續約",
+    "考慮將適合的工作負載遷移到 Graviton 處理器（最多節省 40%）",
+    "使用 ECS Fargate Spot 降低容器成本（最多節省 70%）",
+    "為 EKS Node Groups 使用 Spot Instances",
+    "使用 Lambda Power Tuning 優化函數記憶體配置",
     "檢查 Lambda 預配置並發的必要性",
-    "優化 Lambda 函數記憶體配置以降低成本",
-    "檢查 Auto Scaling Group 是否過度佈署",
-    "評估 EKS NodeGroup 的縮容機會",
+    "為高流量 API Gateway 啟用快取",
+    "考慮使用 Aurora Serverless v2 處理變動工作負載",
+    "為 ElastiCache 穩定工作負載購買 Reserved Nodes",
+    "為 EFS 啟用生命週期管理自動轉移到 IA 儲存類別",
+    "為 CloudWatch Logs 設定適當的保留期限",
     "將 RDS gp2 儲存遷移到 gp3 以節省成本",
     "為 RDS 啟用儲存自動擴展避免過度佈建",
     "檢查並調整 RDS 備份保留期",
     "定期清理 RDS 舊快照",
     "分析 RDS 實例使用率並調整大小",
-    "評估 DynamoDB 計費模式 (On-Demand vs Provisioned)",
+    "評估 DynamoDB 計費模式（On-Demand vs Provisioned）",
     "為 DynamoDB Provisioned 表啟用 Auto Scaling",
     "啟用 DynamoDB TTL 自動清理過期資料",
     "識別並處理閒置的 DynamoDB 表",
