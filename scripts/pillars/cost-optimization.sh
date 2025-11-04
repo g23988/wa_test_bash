@@ -180,8 +180,14 @@ check_eip_unattached() {
     
     echo "$eip" | jq -c '.Addresses[]?' 2>/dev/null | while read -r a; do
         [[ -z "$a" ]] && continue
-        [[ "$(echo "$a" | jq -r '.AssociationId // empty')" == "" ]] && \
-            emit "EIP:Unattached" "$(echo "$a" | jq -r '.PublicIp')" "$region" "FAIL" "MEDIUM" "Elastic IP not associated"
+        
+        local assoc_id public_ip
+        assoc_id="$(echo "$a" | jq -r '.AssociationId // ""' 2>/dev/null)"
+        public_ip="$(echo "$a" | jq -r '.PublicIp' 2>/dev/null || echo "unknown")"
+        
+        if [[ -z "$assoc_id" || "$assoc_id" == "null" ]]; then
+            emit "EIP:Unattached" "$public_ip" "$region" "FAIL" "MEDIUM" "Elastic IP not associated"
+        fi
     done
 }
 
@@ -687,41 +693,47 @@ check_savings_plans
 
 log_info "執行區域性成本優化檢查 (區域: $REGION)..."
 
+# 暫時允許個別檢查失敗
+set +e
+
 # Compute 優化
-check_ebs_orphans_and_gp2 "$REGION"
-check_eip_unattached "$REGION"
-check_ec2_graviton_candidates "$REGION"
-check_ec2_spot_usage "$REGION"
-check_reserved_instances "$REGION"
-check_ec2_idle_metrics "$REGION"
+check_ebs_orphans_and_gp2 "$REGION" || log_warning "EBS 檢查失敗，繼續執行..."
+check_eip_unattached "$REGION" || log_warning "EIP 檢查失敗，繼續執行..."
+check_ec2_graviton_candidates "$REGION" || log_warning "EC2 Graviton 檢查失敗，繼續執行..."
+check_ec2_spot_usage "$REGION" || log_warning "EC2 Spot 檢查失敗，繼續執行..."
+check_reserved_instances "$REGION" || log_warning "Reserved Instances 檢查失敗，繼續執行..."
+check_ec2_idle_metrics "$REGION" || log_warning "EC2 閒置檢查失敗，繼續執行..."
 
 # Container 優化
-check_ecs_fargate_spot "$REGION"
-check_eks_node_groups "$REGION"
+check_ecs_fargate_spot "$REGION" || log_warning "ECS Fargate Spot 檢查失敗，繼續執行..."
+check_eks_node_groups "$REGION" || log_warning "EKS Node Groups 檢查失敗，繼續執行..."
 
 # Serverless 優化
-check_lambda_provisioned "$REGION"
-check_lambda_memory_optimization "$REGION"
-check_api_gateway_caching "$REGION"
+check_lambda_provisioned "$REGION" || log_warning "Lambda 預配置檢查失敗，繼續執行..."
+check_lambda_memory_optimization "$REGION" || log_warning "Lambda 記憶體檢查失敗，繼續執行..."
+check_api_gateway_caching "$REGION" || log_warning "API Gateway 檢查失敗，繼續執行..."
 
 # Database 優化
-check_rds_storage_autoscaling "$REGION"
-check_aurora_serverless "$REGION"
-check_dynamodb_mode_autoscaling "$REGION"
-check_elasticache_reserved_nodes "$REGION"
+check_rds_storage_autoscaling "$REGION" || log_warning "RDS 檢查失敗，繼續執行..."
+check_aurora_serverless "$REGION" || log_warning "Aurora 檢查失敗，繼續執行..."
+check_dynamodb_mode_autoscaling "$REGION" || log_warning "DynamoDB 檢查失敗，繼續執行..."
+check_elasticache_reserved_nodes "$REGION" || log_warning "ElastiCache 檢查失敗，繼續執行..."
 
 # Storage 優化
-check_efs_lifecycle_policy "$REGION"
+check_efs_lifecycle_policy "$REGION" || log_warning "EFS 檢查失敗，繼續執行..."
 
 # Network 優化
-check_elbv2_idle "$REGION"
-check_nat_gateways "$REGION"
+check_elbv2_idle "$REGION" || log_warning "ELB 檢查失敗，繼續執行..."
+check_nat_gateways "$REGION" || log_warning "NAT Gateway 檢查失敗，繼續執行..."
 
 # Monitoring 優化
-check_cw_logs_retention "$REGION"
+check_cw_logs_retention "$REGION" || log_warning "CloudWatch Logs 檢查失敗，繼續執行..."
 
 # Container Registry
-check_ecr_lifecycle "$REGION"
+check_ecr_lifecycle "$REGION" || log_warning "ECR 檢查失敗，繼續執行..."
+
+# 恢復嚴格模式
+set -e
 
 # ========== 計算資源成本檢查 ==========
 
