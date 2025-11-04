@@ -139,18 +139,26 @@ check_s3_lifecycle_global() {
 check_ebs_orphans_and_gp2() {
     local region="$1"
     log_info "檢查 EBS 孤立磁碟區和 gp2 類型 (區域: $region)..."
-    vols="$(aws_try "$region" aws ec2 describe-volumes --output json)"
-    [[ "$vols" == __ERROR__* ]] && { 
-        emit "EBS:Unused" "-" "$region" "INFO" "MEDIUM" "AccessDenied"
-        emit "EBS:gp2" "-" "$region" "INFO" "LOW" "AccessDenied"
-        return
-    }
     
-    echo "$vols" | jq -c '.Volumes[]?' | while read -r v; do
-        id="$(echo "$v" | jq -r '.VolumeId')"
-        state="$(echo "$v" | jq -r '.State')"
-        type="$(echo "$v" | jq -r '.VolumeType')"
-        atts="$(echo "$v" | jq -r '.Attachments|length')"
+    local vols
+    vols="$(aws ec2 describe-volumes --region "$region" --output json 2>/dev/null || echo '{"Volumes":[]}')"
+    
+    local vol_count
+    vol_count="$(echo "$vols" | jq '.Volumes | length' 2>/dev/null || echo 0)"
+    
+    if [[ "$vol_count" -eq 0 ]]; then
+        emit "EBS:Unused" "-" "$region" "INFO" "LOW" "No EBS volumes found"
+        return
+    fi
+    
+    echo "$vols" | jq -c '.Volumes[]?' 2>/dev/null | while read -r v; do
+        [[ -z "$v" ]] && continue
+        
+        local id state type atts
+        id="$(echo "$v" | jq -r '.VolumeId' 2>/dev/null || echo "unknown")"
+        state="$(echo "$v" | jq -r '.State' 2>/dev/null || echo "unknown")"
+        type="$(echo "$v" | jq -r '.VolumeType' 2>/dev/null || echo "gp2")"
+        atts="$(echo "$v" | jq -r '.Attachments|length' 2>/dev/null || echo 0)"
         
         # 檢查未附加的磁碟區
         if [[ "$state" == "available" && "$atts" -eq 0 ]]; then
@@ -166,10 +174,12 @@ check_ebs_orphans_and_gp2() {
 check_eip_unattached() {
     local region="$1"
     log_info "檢查未關聯的 Elastic IP (區域: $region)..."
-    eip="$(aws_try "$region" aws ec2 describe-addresses --output json)"
-    [[ "$eip" == __ERROR__* ]] && { emit "EIP:Unattached" "-" "$region" "INFO" "LOW" "AccessDenied/None"; return; }
     
-    echo "$eip" | jq -c '.Addresses[]?' | while read -r a; do
+    local eip
+    eip="$(aws ec2 describe-addresses --region "$region" --output json 2>/dev/null || echo '{"Addresses":[]}')"
+    
+    echo "$eip" | jq -c '.Addresses[]?' 2>/dev/null | while read -r a; do
+        [[ -z "$a" ]] && continue
         [[ "$(echo "$a" | jq -r '.AssociationId // empty')" == "" ]] && \
             emit "EIP:Unattached" "$(echo "$a" | jq -r '.PublicIp')" "$region" "FAIL" "MEDIUM" "Elastic IP not associated"
     done
@@ -178,10 +188,12 @@ check_eip_unattached() {
 check_elbv2_idle() {
     local region="$1"
     log_info "檢查 Load Balancer 目標群組 (區域: $region)..."
-    lbs="$(aws_try "$region" aws elbv2 describe-load-balancers --output json)"
-    [[ "$lbs" == __ERROR__* ]] && { emit "ALB/NLB:NoTargets" "-" "$region" "INFO" "LOW" "AccessDenied/None"; return; }
     
-    echo "$lbs" | jq -c '.LoadBalancers[]?' | while read -r lb; do
+    local lbs
+    lbs="$(aws elbv2 describe-load-balancers --region "$region" --output json 2>/dev/null || echo '{"LoadBalancers":[]}')"
+    
+    echo "$lbs" | jq -c '.LoadBalancers[]?' 2>/dev/null | while read -r lb; do
+        [[ -z "$lb" ]] && continue
         arn="$(echo "$lb" | jq -r '.LoadBalancerArn')"
         name="$(echo "$lb" | jq -r '.LoadBalancerName')"
         
@@ -203,10 +215,12 @@ check_elbv2_idle() {
 check_ecr_lifecycle() {
     local region="$1"
     log_info "檢查 ECR 生命週期政策 (區域: $region)..."
-    repos="$(aws_try "$region" aws ecr describe-repositories --query 'repositories[].repositoryName' --output json)"
-    [[ "$repos" == __ERROR__* ]] && { emit "ECR:LifecyclePolicy" "-" "$region" "INFO" "LOW" "AccessDenied/None"; return; }
     
-    for r in $(echo "$repos" | jq -r '.[]'); do
+    local repos
+    repos="$(aws ecr describe-repositories --region "$region" --query 'repositories[].repositoryName' --output json 2>/dev/null || echo '[]')"
+    
+    echo "$repos" | jq -r '.[]' 2>/dev/null | while read -r r; do
+        [[ -z "$r" ]] && continue
         pol="$(aws ecr get-lifecycle-policy --region "$region" --repository-name "$r" --query 'lifecyclePolicyText' --output text 2>/dev/null || true)"
         [[ -z "${pol:-}" || "$pol" == "None" ]] && emit "ECR:LifecyclePolicy" "$r" "$region" "WARN" "LOW" "No lifecycle policy"
     done
@@ -215,14 +229,20 @@ check_ecr_lifecycle() {
 check_rds_storage_autoscaling() {
     local region="$1"
     log_info "檢查 RDS 儲存自動擴展 (區域: $region)..."
-    dbs="$(aws_try "$region" aws rds describe-db-instances --output json)"
-    [[ "$dbs" == __ERROR__* ]] && { 
-        emit "RDS:gp2" "-" "$region" "INFO" "LOW" "AccessDenied/None"
-        emit "RDS:StorageAutoscaling" "-" "$region" "INFO" "LOW" "AccessDenied/None"
-        return
-    }
     
-    echo "$dbs" | jq -c '.DBInstances[]?' | while read -r db; do
+    local dbs
+    dbs="$(aws rds describe-db-instances --region "$region" --output json 2>/dev/null || echo '{"DBInstances":[]}')"
+    
+    local db_count
+    db_count="$(echo "$dbs" | jq '.DBInstances | length' 2>/dev/null || echo 0)"
+    
+    if [[ "$db_count" -eq 0 ]]; then
+        emit "RDS:gp2" "-" "$region" "INFO" "LOW" "No RDS instances"
+        return
+    fi
+    
+    echo "$dbs" | jq -c '.DBInstances[]?' 2>/dev/null | while read -r db; do
+        [[ -z "$db" ]] && continue
         id="$(echo "$db" | jq -r '.DBInstanceIdentifier')"
         st="$(echo "$db" | jq -r '.StorageType // "gp2"')"
         
@@ -241,10 +261,12 @@ check_rds_storage_autoscaling() {
 check_lambda_provisioned() {
     local region="$1"
     log_info "檢查 Lambda 預配置並發 (區域: $region)..."
-    funcs="$(aws_try "$region" aws lambda list-functions --query 'Functions[].FunctionName' --output json)"
-    [[ "$funcs" == __ERROR__* ]] && { emit "Lambda:ProvisionedConcurrency" "-" "$region" "INFO" "LOW" "AccessDenied/None"; return; }
     
-    for f in $(echo "$funcs" | jq -r '.[]'); do
+    local funcs
+    funcs="$(aws lambda list-functions --region "$region" --query 'Functions[].FunctionName' --output json 2>/dev/null || echo '[]')"
+    
+    echo "$funcs" | jq -r '.[]' 2>/dev/null | while read -r f; do
+        [[ -z "$f" ]] && continue
         pc="$(aws lambda list-provisioned-concurrency-configs --region "$region" --function-name "$f" --query 'ProvisionedConcurrencyConfigs' --output json 2>/dev/null || echo '[]')"
         [[ "$(echo "$pc" | jq 'length')" -gt 0 ]] && emit "Lambda:ProvisionedConcurrency" "$f" "$region" "WARN" "LOW" "Has provisioned concurrency"
     done
@@ -253,10 +275,12 @@ check_lambda_provisioned() {
 check_dynamodb_mode_autoscaling() {
     local region="$1"
     log_info "檢查 DynamoDB 計費模式 (區域: $region)..."
-    tabs="$(aws_try "$region" aws dynamodb list-tables --query 'TableNames' --output json)"
-    [[ "$tabs" == __ERROR__* ]] && { emit "DDB:AutoScaling" "-" "$region" "INFO" "LOW" "AccessDenied/None"; return; }
     
-    for t in $(echo "$tabs" | jq -r '.[]'); do
+    local tabs
+    tabs="$(aws dynamodb list-tables --region "$region" --query 'TableNames' --output json 2>/dev/null || echo '[]')"
+    
+    echo "$tabs" | jq -r '.[]' 2>/dev/null | while read -r t; do
+        [[ -z "$t" ]] && continue
         d="$(aws dynamodb describe-table --region "$region" --table-name "$t" --output json 2>/dev/null || echo '{}')"
         mode="$(echo "$d" | jq -r '.Table.BillingModeSummary.BillingMode // "PROVISIONED"')"
         if [[ "$mode" == "PROVISIONED" ]]; then
@@ -268,14 +292,12 @@ check_dynamodb_mode_autoscaling() {
 check_ec2_graviton_candidates() {
     local region="$1"
     log_info "檢查 EC2 Graviton 候選和 Savings Plan 機會 (區域: $region)..."
-    res="$(aws_try "$region" aws ec2 describe-instances --query 'Reservations[].Instances[]' --output json)"
-    [[ "$res" == __ERROR__* ]] && { 
-        emit "EC2:GravitonCandidate" "-" "$region" "INFO" "LOW" "AccessDenied"
-        emit "EC2:SavingsPlanCandidate" "-" "$region" "INFO" "LOW" "AccessDenied"
-        return
-    }
     
-    echo "$res" | jq -c '.[]?' | while read -r i; do
+    local res
+    res="$(aws ec2 describe-instances --region "$region" --query 'Reservations[].Instances[]' --output json 2>/dev/null || echo '[]')"
+    
+    echo "$res" | jq -c '.[]?' 2>/dev/null | while read -r i; do
+        [[ -z "$i" ]] && continue
         id="$(echo "$i" | jq -r '.InstanceId')"
         it="$(echo "$i" | jq -r '.InstanceType')"
         arch="$(echo "$i" | jq -r '.Architecture // .PlatformDetails // "x86_64"')"
@@ -298,10 +320,12 @@ check_ec2_graviton_candidates() {
 check_nat_gateways() {
     local region="$1"
     log_info "檢查 NAT Gateway 使用 (區域: $region)..."
-    nats="$(aws_try "$region" aws ec2 describe-nat-gateways --query 'NatGateways[].NatGatewayId' --output json)"
-    [[ "$nats" == __ERROR__* ]] && { emit "NAT:Usage" "-" "$region" "INFO" "LOW" "AccessDenied/None"; return; }
     
-    for n in $(echo "$nats" | jq -r '.[]'); do
+    local nats
+    nats="$(aws ec2 describe-nat-gateways --region "$region" --query 'NatGateways[].NatGatewayId' --output json 2>/dev/null || echo '[]')"
+    
+    echo "$nats" | jq -r '.[]' 2>/dev/null | while read -r n; do
+        [[ -z "$n" ]] && continue
         emit "NAT:Usage" "$n" "$region" "INFO" "LOW" "High-cost data processing; evaluate PrivateLink/egress patterns"
     done
 }
@@ -309,10 +333,12 @@ check_nat_gateways() {
 check_cw_logs_retention() {
     local region="$1"
     log_info "檢查 CloudWatch Logs 保留政策 (區域: $region)..."
-    groups="$(aws_try "$region" aws logs describe-log-groups --query 'logGroups[].{n:logGroupName,r:retentionInDays}' --output json)"
-    [[ "$groups" == __ERROR__* ]] && { emit "CWLogs:Retention" "-" "$region" "INFO" "LOW" "AccessDenied/None"; return; }
     
-    echo "$groups" | jq -c '.[]?' | while read -r g; do
+    local groups
+    groups="$(aws logs describe-log-groups --region "$region" --query 'logGroups[].{n:logGroupName,r:retentionInDays}' --output json 2>/dev/null || echo '[]')"
+    
+    echo "$groups" | jq -c '.[]?' 2>/dev/null | while read -r g; do
+        [[ -z "$g" ]] && continue
         name="$(echo "$g" | jq -r '.n')"
         r="$(echo "$g" | jq -r '.r // "None"')"
         [[ "$r" == "None" ]] && emit "CWLogs:Retention" "$name" "$region" "WARN" "LOW" "No retention policy (infinite storage)"
