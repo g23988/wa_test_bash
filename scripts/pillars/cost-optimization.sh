@@ -50,10 +50,11 @@ IDLE_LOOKBACK_DAYS="${IDLE_LOOKBACK_DAYS:-3}"   # 回看天數
 # 工具函數
 emit() {
     local check="$1" resource="$2" region="$3" status="$4" severity="$5" details="$6"
-    jq -c -n --arg ts "$TIMESTAMP" --arg acct "$ACCOUNT_ID" \
+    # 使用 printf 確保每個 JSON 對象後有換行符
+    printf '%s\n' "$(jq -c -n --arg ts "$TIMESTAMP" --arg acct "$ACCOUNT_ID" \
         --arg check "$check" --arg res "$resource" --arg reg "$region" \
         --arg status "$status" --arg sev "$severity" --arg details "$details" \
-        '{timestamp:$ts,account_id:$acct,check:$check,resource:$res,region:$reg,status:$status,severity:$sev,details:$details}' >> "$DETAILED_OUTPUT_FILE"
+        '{timestamp:$ts,account_id:$acct,check:$check,resource:$res,region:$reg,status:$status,severity:$sev,details:$details}')" >> "$DETAILED_OUTPUT_FILE"
 }
 
 aws_try() {

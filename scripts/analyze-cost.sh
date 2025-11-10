@@ -56,20 +56,30 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${PURPLE}💰 成本優化檢查結果統計總覽${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 計算總行數（處理可能沒有換行符的情況）
-TOTAL=$(grep -o '{"timestamp"' "$DETAILED_FILE" | wc -l | tr -d ' ')
-if [[ "$TOTAL" -eq 0 ]]; then
-    TOTAL=$(wc -l < "$DETAILED_FILE" | tr -d ' ')
+# 先嘗試標準方式計算行數
+TOTAL=$(wc -l < "$DETAILED_FILE" | tr -d ' ')
+
+# 如果只有 0 或 1 行，可能所有 JSON 都在一行，使用 grep -o 計數
+if [[ "$TOTAL" -le 1 ]]; then
+    log_warning "檢測到 JSONL 格式異常，使用替代計數方式..."
+    TOTAL=$(grep -o '{"timestamp"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+    HIGH=$(grep -o '"severity":"HIGH"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+    MEDIUM=$(grep -o '"severity":"MEDIUM"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+    LOW=$(grep -o '"severity":"LOW"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+    FAIL=$(grep -o '"status":"FAIL"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+    WARN=$(grep -o '"status":"WARN"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+    OK=$(grep -o '"status":"OK"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+    INFO=$(grep -o '"status":"INFO"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+else
+    # 標準 JSONL 格式，每行一個 JSON
+    HIGH=$(grep '"severity":"HIGH"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+    MEDIUM=$(grep '"severity":"MEDIUM"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+    LOW=$(grep '"severity":"LOW"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+    FAIL=$(grep '"status":"FAIL"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+    WARN=$(grep '"status":"WARN"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+    OK=$(grep '"status":"OK"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+    INFO=$(grep '"status":"INFO"' "$DETAILED_FILE" | wc -l | tr -d ' ')
 fi
-
-HIGH=$(grep -o '"severity":"HIGH"' "$DETAILED_FILE" | wc -l | tr -d ' ')
-MEDIUM=$(grep -o '"severity":"MEDIUM"' "$DETAILED_FILE" | wc -l | tr -d ' ')
-LOW=$(grep -o '"severity":"LOW"' "$DETAILED_FILE" | wc -l | tr -d ' ')
-
-FAIL=$(grep -o '"status":"FAIL"' "$DETAILED_FILE" | wc -l | tr -d ' ')
-WARN=$(grep -o '"status":"WARN"' "$DETAILED_FILE" | wc -l | tr -d ' ')
-OK=$(grep -o '"status":"OK"' "$DETAILED_FILE" | wc -l | tr -d ' ')
-INFO=$(grep -o '"status":"INFO"' "$DETAILED_FILE" | wc -l | tr -d ' ')
 
 echo "總檢查項目: $TOTAL"
 echo
