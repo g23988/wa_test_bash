@@ -90,17 +90,13 @@ if [[ $CRITICAL -gt 0 || $FAIL -gt 0 ]]; then
     # 嚴重問題
     if [[ $CRITICAL -gt 0 ]]; then
         echo -e "${RED}嚴重問題:${NC}"
-        grep '"severity":"CRITICAL"' "$DETAILED_FILE" | jq -r '"  ❌ " + .check + ": " + .resource + " - " + .details' | head -10
+        grep '"severity":"CRITICAL"' "$DETAILED_FILE" | jq -r '"  ❌ " + .check + ": " + .resource + " - " + .details'
         echo
     fi
     
     # 失敗的檢查
     echo -e "${RED}失敗的檢查:${NC}"
-    grep '"status":"FAIL"' "$DETAILED_FILE" | jq -r '"  ❌ " + .check + ": " + .resource + " (" + .region + ") - " + .details' | head -10
-    
-    if [[ $FAIL -gt 10 ]]; then
-        echo "  ... 還有 $((FAIL - 10)) 個失敗項目"
-    fi
+    grep '"status":"FAIL"' "$DETAILED_FILE" | jq -r '"  ❌ " + .check + ": " + .resource + " (" + .region + ") - " + .details'
 fi
 
 # 警告問題
@@ -110,11 +106,7 @@ if [[ $WARN -gt 0 ]]; then
     echo -e "${YELLOW}⚠️  需要關注的警告${NC}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
-    grep '"status":"WARN"' "$DETAILED_FILE" | jq -r '"  ⚠️  " + .check + ": " + .resource + " (" + .region + ") - " + .details' | head -10
-    
-    if [[ $WARN -gt 10 ]]; then
-        echo "  ... 還有 $((WARN - 10)) 個警告項目"
-    fi
+    grep '"status":"WARN"' "$DETAILED_FILE" | jq -r '"  ⚠️  " + .check + ": " + .resource + " (" + .region + ") - " + .details'
 fi
 
 # 按檢查類型分組統計
