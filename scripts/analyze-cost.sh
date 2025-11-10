@@ -56,15 +56,20 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${PURPLE}💰 成本優化檢查結果統計總覽${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-TOTAL=$(wc -l < "$DETAILED_FILE" | tr -d ' ')
-HIGH=$(grep '"severity":"HIGH"' "$DETAILED_FILE" | wc -l | tr -d ' ')
-MEDIUM=$(grep '"severity":"MEDIUM"' "$DETAILED_FILE" | wc -l | tr -d ' ')
-LOW=$(grep '"severity":"LOW"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+# 計算總行數（處理可能沒有換行符的情況）
+TOTAL=$(grep -o '{"timestamp"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+if [[ "$TOTAL" -eq 0 ]]; then
+    TOTAL=$(wc -l < "$DETAILED_FILE" | tr -d ' ')
+fi
 
-FAIL=$(grep '"status":"FAIL"' "$DETAILED_FILE" | wc -l | tr -d ' ')
-WARN=$(grep '"status":"WARN"' "$DETAILED_FILE" | wc -l | tr -d ' ')
-OK=$(grep '"status":"OK"' "$DETAILED_FILE" | wc -l | tr -d ' ')
-INFO=$(grep '"status":"INFO"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+HIGH=$(grep -o '"severity":"HIGH"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+MEDIUM=$(grep -o '"severity":"MEDIUM"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+LOW=$(grep -o '"severity":"LOW"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+
+FAIL=$(grep -o '"status":"FAIL"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+WARN=$(grep -o '"status":"WARN"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+OK=$(grep -o '"status":"OK"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+INFO=$(grep -o '"status":"INFO"' "$DETAILED_FILE" | wc -l | tr -d ' ')
 
 echo "總檢查項目: $TOTAL"
 echo
@@ -87,19 +92,20 @@ if [[ $FAIL -gt 0 ]]; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
     # 未使用的 EBS 磁碟區
-    EBS_UNUSED=$(grep '"check":"EBS:Unused"' "$DETAILED_FILE" | grep '"status":"FAIL"' | wc -l | tr -d ' ')
+    EBS_UNUSED=$(grep -o '"check":"EBS:Unused"[^}]*"status":"FAIL"' "$DETAILED_FILE" | wc -l | tr -d ' ')
     if [[ $EBS_UNUSED -gt 0 ]]; then
         echo -e "${RED}🔴 未附加的 EBS 磁碟區: $EBS_UNUSED 個${NC}"
-        grep '"check":"EBS:Unused"' "$DETAILED_FILE" | grep '"status":"FAIL"' | jq -r '"  💾 " + .resource + " - " + .details' | head -5
+        # 使用 sed 分割 JSON 對象然後處理
+        sed 's/}{/}\n{/g' "$DETAILED_FILE" | grep '"check":"EBS:Unused"' | grep '"status":"FAIL"' | jq -r '"  💾 " + .resource + " - " + .details' 2>/dev/null | head -5
         [[ $EBS_UNUSED -gt 5 ]] && echo "  ... 還有 $((EBS_UNUSED - 5)) 個"
         echo
     fi
     
     # 未關聯的 Elastic IP
-    EIP_UNUSED=$(grep '"check":"EIP:Unattached"' "$DETAILED_FILE" | grep '"status":"FAIL"' | wc -l | tr -d ' ')
+    EIP_UNUSED=$(grep -o '"check":"EIP:Unattached"[^}]*"status":"FAIL"' "$DETAILED_FILE" | wc -l | tr -d ' ')
     if [[ $EIP_UNUSED -gt 0 ]]; then
         echo -e "${RED}🔴 未關聯的 Elastic IP: $EIP_UNUSED 個${NC}"
-        grep '"check":"EIP:Unattached"' "$DETAILED_FILE" | grep '"status":"FAIL"' | jq -r '"  🌐 " + .resource + " - " + .details' | head -5
+        sed 's/}{/}\n{/g' "$DETAILED_FILE" | grep '"check":"EIP:Unattached"' | grep '"status":"FAIL"' | jq -r '"  🌐 " + .resource + " - " + .details' 2>/dev/null | head -5
         [[ $EIP_UNUSED -gt 5 ]] && echo "  ... 還有 $((EIP_UNUSED - 5)) 個"
         echo
     fi
@@ -122,7 +128,7 @@ if [[ $WARN -gt 0 ]]; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
     # gp2 到 gp3 遷移
-    GP2_COUNT=$(grep '"check":"EBS:gp2"' "$DETAILED_FILE" | grep '"status":"WARN"' | wc -l | tr -d ' ')
+    GP2_COUNT=$(grep -o '"check":"EBS:gp2"[^}]*"status":"WARN"' "$DETAILED_FILE" | wc -l | tr -d ' ')
     if [[ $GP2_COUNT -gt 0 ]]; then
         echo -e "${YELLOW}📀 EBS gp2 → gp3 遷移機會: $GP2_COUNT 個磁碟區${NC}"
         echo "  💰 預估節省: 約 20% 儲存成本"
@@ -130,23 +136,39 @@ if [[ $WARN -gt 0 ]]; then
     fi
     
     # Savings Plan 候選
-    SP_COUNT=$(grep '"check":"EC2:SavingsPlanCandidate"' "$DETAILED_FILE" | grep '"status":"WARN"' | wc -l | tr -d ' ')
+    SP_COUNT=$(grep -o '"check":"EC2:SavingsPlanCandidate"[^}]*"status":"WARN"' "$DETAILED_FILE" | wc -l | tr -d ' ')
     if [[ $SP_COUNT -gt 0 ]]; then
         echo -e "${YELLOW}💳 Savings Plan 候選: $SP_COUNT 個長期運行實例${NC}"
         echo "  💰 預估節省: 最高 72% EC2 成本"
         echo
     fi
     
+    # Spot Instance 機會
+    SPOT_OPP=$(grep -o '"check":"EC2:SpotOpportunity"[^}]*"status":"WARN"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+    if [[ $SPOT_OPP -gt 0 ]]; then
+        echo -e "${YELLOW}🎯 Spot Instance 使用率低${NC}"
+        echo "  💰 預估節省: 最高 90% EC2 成本（容錯工作負載）"
+        echo
+    fi
+    
     # S3 生命週期
-    S3_LC_COUNT=$(grep '"check":"S3:Lifecycle"' "$DETAILED_FILE" | grep '"status":"WARN"' | wc -l | tr -d ' ')
+    S3_LC_COUNT=$(grep -o '"check":"S3:Lifecycle"[^}]*"status":"WARN"' "$DETAILED_FILE" | wc -l | tr -d ' ')
     if [[ $S3_LC_COUNT -gt 0 ]]; then
         echo -e "${YELLOW}🪣 S3 生命週期政策缺失: $S3_LC_COUNT 個儲存桶${NC}"
-        echo "  💰 預估節省: 30-80% 儲存成本 (透過 IA/Glacier)"
+        echo "  💰 預估節省: 30-80% 儲存成本（透過 IA/Glacier）"
+        echo
+    fi
+    
+    # EBS 舊快照
+    EBS_OLD_SNAP=$(grep -o '"check":"EBS:OldSnapshot"[^}]*"status":"WARN"' "$DETAILED_FILE" | wc -l | tr -d ' ')
+    if [[ $EBS_OLD_SNAP -gt 0 ]]; then
+        echo -e "${YELLOW}📸 EBS 舊快照: $EBS_OLD_SNAP 個快照${NC}"
+        echo "  💰 預估節省: 刪除舊快照可節省儲存成本"
         echo
     fi
     
     # CloudWatch Logs 保留
-    CW_LOGS_COUNT=$(grep '"check":"CWLogs:Retention"' "$DETAILED_FILE" | grep '"status":"WARN"' | wc -l | tr -d ' ')
+    CW_LOGS_COUNT=$(grep -o '"check":"CWLogs:Retention"[^}]*"status":"WARN"' "$DETAILED_FILE" | wc -l | tr -d ' ')
     if [[ $CW_LOGS_COUNT -gt 0 ]]; then
         echo -e "${YELLOW}📊 CloudWatch Logs 無保留期限: $CW_LOGS_COUNT 個日誌群組${NC}"
         echo "  💰 預估節省: 避免無限制的日誌儲存成本"
@@ -154,7 +176,7 @@ if [[ $WARN -gt 0 ]]; then
     fi
     
     # Lambda 記憶體過大
-    LAMBDA_MEM_COUNT=$(grep '"check":"Lambda:OversizedMemory"' "$DETAILED_FILE" | grep '"status":"WARN"' | wc -l | tr -d ' ')
+    LAMBDA_MEM_COUNT=$(grep -o '"check":"Lambda:OversizedMemory"[^}]*"status":"WARN"' "$DETAILED_FILE" | wc -l | tr -d ' ')
     if [[ $LAMBDA_MEM_COUNT -gt 0 ]]; then
         echo -e "${YELLOW}🧠 Lambda 記憶體可能過大: $LAMBDA_MEM_COUNT 個函數${NC}"
         echo "  💰 預估節省: 調整記憶體配置可節省 10-30% 成本"
@@ -162,7 +184,7 @@ if [[ $WARN -gt 0 ]]; then
     fi
     
     # ASG 過度佈署
-    ASG_OVER_COUNT=$(grep '"check":"ASG:OverProvision"' "$DETAILED_FILE" | grep '"status":"WARN"' | wc -l | tr -d ' ')
+    ASG_OVER_COUNT=$(grep -o '"check":"ASG:OverProvision"[^}]*"status":"WARN"' "$DETAILED_FILE" | wc -l | tr -d ' ')
     if [[ $ASG_OVER_COUNT -gt 0 ]]; then
         echo -e "${YELLOW}📈 Auto Scaling Group 過度佈署: $ASG_OVER_COUNT 個群組${NC}"
         echo "  💰 預估節省: 調整 ASG 配置可節省 15-25% EC2 成本"
@@ -170,7 +192,7 @@ if [[ $WARN -gt 0 ]]; then
     fi
     
     # EKS NodeGroup 右調大小
-    EKS_NG_COUNT=$(grep '"check":"EKS:NodeGroupRightsize"' "$DETAILED_FILE" | grep '"status":"WARN"' | wc -l | tr -d ' ')
+    EKS_NG_COUNT=$(grep -o '"check":"EKS:NodeGroupRightsize"[^}]*"status":"WARN"' "$DETAILED_FILE" | wc -l | tr -d ' ')
     if [[ $EKS_NG_COUNT -gt 0 ]]; then
         echo -e "${YELLOW}☸️  EKS NodeGroup 可縮容: $EKS_NG_COUNT 個節點群組${NC}"
         echo "  💰 預估節省: 調整節點數量可節省 20-40% EKS 成本"
@@ -178,7 +200,7 @@ if [[ $WARN -gt 0 ]]; then
     fi
     
     # RDS 低 CPU 使用率
-    RDS_LOW_CPU_COUNT=$(grep '"check":"RDS:LowCPU"' "$DETAILED_FILE" | grep '"status":"WARN"' | wc -l | tr -d ' ')
+    RDS_LOW_CPU_COUNT=$(grep -o '"check":"RDS:LowCPU"[^}]*"status":"WARN"' "$DETAILED_FILE" | wc -l | tr -d ' ')
     if [[ $RDS_LOW_CPU_COUNT -gt 0 ]]; then
         echo -e "${YELLOW}🗄️  RDS 低 CPU 使用率: $RDS_LOW_CPU_COUNT 個資料庫${NC}"
         echo "  💰 預估節省: 調整實例大小可節省 30-50% RDS 成本"
@@ -186,7 +208,7 @@ if [[ $WARN -gt 0 ]]; then
     fi
     
     # RDS 舊快照
-    RDS_OLD_SNAP_COUNT=$(grep '"check":"RDS:OldSnapshot"' "$DETAILED_FILE" | grep '"status":"WARN"' | wc -l | tr -d ' ')
+    RDS_OLD_SNAP_COUNT=$(grep -o '"check":"RDS:OldSnapshot"[^}]*"status":"WARN"' "$DETAILED_FILE" | wc -l | tr -d ' ')
     if [[ $RDS_OLD_SNAP_COUNT -gt 0 ]]; then
         echo -e "${YELLOW}📸 RDS 舊快照: $RDS_OLD_SNAP_COUNT 個快照${NC}"
         echo "  💰 預估節省: 刪除舊快照可節省儲存成本"
