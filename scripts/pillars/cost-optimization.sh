@@ -830,11 +830,15 @@ check_lambda_mem_heuristic() {
 }
 
 log_info "執行計算資源成本檢查 (區域: $REGION)..."
-check_ec2_sp_candidates "$REGION"
-check_ec2_type_tally "$REGION"
-check_asg_overprovision "$REGION"
-check_eks_nodegroups "$REGION"
-check_lambda_mem_heuristic "$REGION"
+
+# 暫時允許檢查失敗
+set +e
+check_ec2_sp_candidates "$REGION" || log_warning "EC2 Savings Plan 檢查失敗"
+check_ec2_type_tally "$REGION" || log_warning "EC2 類型統計失敗"
+check_asg_overprovision "$REGION" || log_warning "ASG 檢查失敗"
+check_eks_nodegroups "$REGION" || log_warning "EKS 檢查失敗"
+check_lambda_mem_heuristic "$REGION" || log_warning "Lambda 記憶體檢查失敗"
+set -e
 
 # ========== 資料庫成本檢查 ==========
 
@@ -1006,11 +1010,14 @@ PY
 }
 
 log_info "執行資料庫成本檢查 (區域: $REGION)..."
-check_rds_cost_basics "$REGION"
-check_rds_old_snapshots "$REGION"
-check_rds_low_cpu "$REGION"
-check_ddb_mode_autoscaling_ttl "$REGION"
-check_ddb_idle_metrics "$REGION"
+
+set +e
+check_rds_cost_basics "$REGION" || log_warning "RDS 基本檢查失敗"
+check_rds_old_snapshots "$REGION" || log_warning "RDS 快照檢查失敗"
+check_rds_low_cpu "$REGION" || log_warning "RDS CPU 檢查失敗"
+check_ddb_mode_autoscaling_ttl "$REGION" || log_warning "DynamoDB 檢查失敗"
+check_ddb_idle_metrics "$REGION" || log_warning "DynamoDB 閒置檢查失敗"
+set -e
 
 # ========== 網路成本檢查 ==========
 
@@ -1171,8 +1178,11 @@ check_nlb_idle() {
 }
 
 log_info "執行網路成本檢查 (區域: $REGION)..."
-check_network_cost_basics "$REGION"
-check_vpc_endpoints "$REGION"
+
+set +e
+check_network_cost_basics "$REGION" || log_warning "網路基本檢查失敗"
+check_vpc_endpoints "$REGION" || log_warning "VPC Endpoints 檢查失敗"
+set -e
 check_nlb_idle "$REGION"
 
 # ========== 監控和資料流成本檢查 ==========
@@ -1297,9 +1307,12 @@ check_kinesis_streams_cost() {
 }
 
 log_info "執行監控和資料流成本檢查 (區域: $REGION)..."
-check_cw_logs_enhanced "$REGION"
-check_cw_metrics_alarms "$REGION"
-check_kinesis_streams_cost "$REGION"
+
+set +e
+check_cw_logs_enhanced "$REGION" || log_warning "CloudWatch Logs 檢查失敗"
+check_cw_metrics_alarms "$REGION" || log_warning "CloudWatch Metrics 檢查失敗"
+check_kinesis_streams_cost "$REGION" || log_warning "Kinesis 檢查失敗"
+set -e
 
 # ========== 資料傳輸成本檢查 ==========
 
@@ -1710,18 +1723,21 @@ check_cloudfront_cache_behavior() {
 }
 
 log_info "執行資料傳輸成本檢查 (區域: $REGION)..."
-check_cloudfront_dt
-check_cloudfront_cache_behavior
-check_s3_replication_dt
-check_s3_transfer_acceleration
-check_elb2_crosszone_dt "$REGION"
-check_vpc_peering_dt "$REGION"
-check_tgw_dt "$REGION"
-check_nat_dt "$REGION"
-check_vpce_dt "$REGION"
-check_direct_connect "$REGION"
-check_global_accelerator
-check_inter_region_traffic "$REGION"
+
+set +e
+check_cloudfront_dt || log_warning "CloudFront 檢查失敗"
+check_cloudfront_cache_behavior || log_warning "CloudFront 快取檢查失敗"
+check_s3_replication_dt || log_warning "S3 複寫檢查失敗"
+check_s3_transfer_acceleration || log_warning "S3 Transfer Acceleration 檢查失敗"
+check_elb2_crosszone_dt "$REGION" || log_warning "ELB Cross-Zone 檢查失敗"
+check_vpc_peering_dt "$REGION" || log_warning "VPC Peering 檢查失敗"
+check_tgw_dt "$REGION" || log_warning "Transit Gateway 檢查失敗"
+check_nat_dt "$REGION" || log_warning "NAT Gateway 檢查失敗"
+check_vpce_dt "$REGION" || log_warning "VPC Endpoints 檢查失敗"
+check_direct_connect "$REGION" || log_warning "Direct Connect 檢查失敗"
+check_global_accelerator || log_warning "Global Accelerator 檢查失敗"
+check_inter_region_traffic "$REGION" || log_warning "跨區域流量檢查失敗"
+set -e
 
 # ========== 儲存成本檢查 ==========
 
@@ -1871,9 +1887,12 @@ check_efs_storage_cost() {
 }
 
 log_info "執行儲存成本檢查..."
-check_s3_storage_cost
-check_ebs_storage_cost "$REGION"
-check_efs_storage_cost "$REGION"
+
+set +e
+check_s3_storage_cost || log_warning "S3 儲存檢查失敗"
+check_ebs_storage_cost "$REGION" || log_warning "EBS 儲存檢查失敗"
+check_efs_storage_cost "$REGION" || log_warning "EFS 儲存檢查失敗"
+set -e
 
 # ========== 生成報告 ==========
 
