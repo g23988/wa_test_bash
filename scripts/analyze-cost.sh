@@ -124,11 +124,7 @@ if [[ $FAIL -gt 0 ]]; then
     temp_file=$(mktemp)
     sed 's/}{/}\n{/g' "$DETAILED_FILE" > "$temp_file"
     
-    sed 's/}{/}\n{/g' "$DETAILED_FILE" | grep '"status":"FAIL"' | jq -r '"  ❌ " + .check + ": " + .resource + " (" + .region + ") - " + .details' 2>/dev/null | head -10
-    
-    if [[ $FAIL -gt 10 ]]; then
-        echo "  ... 還有 $((FAIL - 10)) 個需要處理的項目"
-    fi
+    sed 's/}{/}\n{/g' "$DETAILED_FILE" | grep '"status":"FAIL"' | jq -r '"  ❌ " + .check + ": " + .resource + " (" + .region + ") - " + .details' 2>/dev/null
     
     rm -f "$temp_file"
 fi
@@ -140,11 +136,7 @@ if [[ $WARN -gt 0 ]]; then
     echo -e "${YELLOW}⚡ 成本優化建議${NC}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
-    sed 's/}{/}\n{/g' "$DETAILED_FILE" | grep '"status":"WARN"' | jq -r '"  ⚠️  " + .check + ": " + .resource + " (" + .region + ") - " + .details' 2>/dev/null | head -10
-    
-    if [[ $WARN -gt 10 ]]; then
-        echo "  ... 還有 $((WARN - 10)) 個優化建議"
-    fi
+    sed 's/}{/}\n{/g' "$DETAILED_FILE" | grep '"status":"WARN"' | jq -r '"  ⚠️  " + .check + ": " + .resource + " (" + .region + ") - " + .details' 2>/dev/null
 fi
 
 # 按檢查類型分組統計
