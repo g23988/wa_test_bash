@@ -1,0 +1,29 @@
+# AWS Well-Architected Assessment Tool - Git Ignore
+
+# Reports directory - contains assessment results
+reports/
+reports/*
+
+# Temporary files
+*.tmp
+*.log
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.iml
+
+# Backup files
+*.bak
+*.backup
+
+# Environment files
+.env
+.env.local
