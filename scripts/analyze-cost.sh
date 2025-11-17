@@ -284,6 +284,177 @@ if grep -q '"check":"EFS:NoLifecycle"' "$DETAILED_FILE" 2>/dev/null; then
     [[ $count -gt 0 ]] && echo "• 📁 為 $count 個 EFS 檔案系統啟用生命週期政策 (節省 85%)"
 fi
 
+# 預估成本節省計算
+echo
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "${CYAN}💰 預估成本節省計算${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+total_monthly_savings=0
+
+# 未使用的 EBS 磁碟區 (假設平均 100GB gp3 @ $0.08/GB/月)
+ebs_unused_count=$( (grep '"check":"EBS:Unused"' "$DETAILED_FILE" | grep '"status":"FAIL"' || true) | wc -l | tr -d ' ')
+if [[ $ebs_unused_count -gt 0 ]]; then
+    ebs_savings=$((ebs_unused_count * 8))
+    total_monthly_savings=$((total_monthly_savings + ebs_savings))
+    echo "💾 刪除 $ebs_unused_count 個未使用 EBS 磁碟區: ~\$$ebs_savings USD/月"
+fi
+
+# 未關聯的 Elastic IP ($0.005/小時 = ~$3.6/月)
+eip_unused_count=$( (grep '"check":"EIP:Unattached"' "$DETAILED_FILE" | grep '"status":"FAIL"' || true) | wc -l | tr -d ' ')
+if [[ $eip_unused_count -gt 0 ]]; then
+    eip_savings=$((eip_unused_count * 4))
+    total_monthly_savings=$((total_monthly_savings + eip_savings))
+    echo "🌐 釋放 $eip_unused_count 個未關聯 Elastic IP: ~\$$eip_savings USD/月"
+fi
+
+# gp2 到 gp3 遷移 (節省約 20%)
+gp2_count=$( (grep '"check":"EBS:gp2"' "$DETAILED_FILE" | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+if [[ $gp2_count -gt 0 ]]; then
+    gp2_savings=$((gp2_count * 2))
+    total_monthly_savings=$((total_monthly_savings + gp2_savings))
+    echo "📀 EBS gp2→gp3 遷移 ($gp2_count 個磁碟區): ~\$$gp2_savings USD/月"
+fi
+
+# EBS 舊快照 (假設平均 50GB @ $0.05/GB/月)
+ebs_snap_count=$( (grep '"check":"EBS:OldSnapshot"' "$DETAILED_FILE" | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+if [[ $ebs_snap_count -gt 0 ]]; then
+    ebs_snap_savings=$((ebs_snap_count * 3))
+    total_monthly_savings=$((total_monthly_savings + ebs_snap_savings))
+    echo "📸 清理 $ebs_snap_count 個 EBS 舊快照: ~\$$ebs_snap_savings USD/月"
+fi
+
+# RDS 舊快照 (假設平均 100GB @ $0.095/GB/月)
+rds_snap_count=$( (grep '"check":"RDS:OldSnapshot"' "$DETAILED_FILE" | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+if [[ $rds_snap_count -gt 0 ]]; then
+    rds_snap_savings=$((rds_snap_count * 10))
+    total_monthly_savings=$((total_monthly_savings + rds_snap_savings))
+    echo "📸 清理 $rds_snap_count 個 RDS 舊快照: ~\$$rds_snap_savings USD/月"
+fi
+
+# S3 生命週期政策 (假設平均節省 50%)
+s3_lc_count=$( (grep '"check":"S3:Lifecycle"' "$DETAILED_FILE" | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+if [[ $s3_lc_count -gt 0 ]]; then
+    s3_lc_savings=$((s3_lc_count * 50))
+    total_monthly_savings=$((total_monthly_savings + s3_lc_savings))
+    echo "🪣 S3 生命週期政策 ($s3_lc_count 個儲存桶): ~\$$s3_lc_savings USD/月"
+fi
+
+# Lambda 記憶體優化 (假設平均節省 20%)
+lambda_mem_count=$( (grep '"check":"Lambda:OversizedMemory"' "$DETAILED_FILE" | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+if [[ $lambda_mem_count -gt 0 ]]; then
+    lambda_savings=$((lambda_mem_count * 5))
+    total_monthly_savings=$((total_monthly_savings + lambda_savings))
+    echo "🧠 Lambda 記憶體優化 ($lambda_mem_count 個函數): ~\$$lambda_savings USD/月"
+fi
+
+# RDS 實例調整 (假設平均節省 40%)
+rds_cpu_count=$( (grep '"check":"RDS:LowCPU"' "$DETAILED_FILE" | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+if [[ $rds_cpu_count -gt 0 ]]; then
+    rds_savings=$((rds_cpu_count * 100))
+    total_monthly_savings=$((total_monthly_savings + rds_savings))
+    echo "🗄️  RDS 實例調整 ($rds_cpu_count 個實例): ~\$$rds_savings USD/月"
+fi
+
+# ASG 優化 (假設平均節省 20%)
+asg_count=$( (grep '"check":"ASG:OverProvision"' "$DETAILED_FILE" | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+if [[ $asg_count -gt 0 ]]; then
+    asg_savings=$((asg_count * 50))
+    total_monthly_savings=$((total_monthly_savings + asg_savings))
+    echo "📈 ASG 配置優化 ($asg_count 個群組): ~\$$asg_savings USD/月"
+fi
+
+# EKS NodeGroup 調整 (假設平均節省 30%)
+eks_count=$( (grep '"check":"EKS:NodeGroupRightsize"' "$DETAILED_FILE" | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+if [[ $eks_count -gt 0 ]]; then
+    eks_savings=$((eks_count * 80))
+    total_monthly_savings=$((total_monthly_savings + eks_savings))
+    echo "☸️  EKS NodeGroup 調整 ($eks_count 個群組): ~\$$eks_savings USD/月"
+fi
+
+# CloudWatch Logs 保留政策
+cw_logs_count=$( ( (grep '"check":"CWLogs:Retention"' "$DETAILED_FILE" || true) | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+cw_logs_count2=$( ( (grep '"check":"CW:NoRetention"' "$DETAILED_FILE" || true) | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+cw_logs_total=$((cw_logs_count + cw_logs_count2))
+if [[ $cw_logs_total -gt 0 ]]; then
+    cw_savings=$((cw_logs_total * 10))
+    total_monthly_savings=$((total_monthly_savings + cw_savings))
+    echo "📊 CloudWatch Logs 保留政策 ($cw_logs_total 個日誌群組): ~\$$cw_savings USD/月"
+fi
+
+# DynamoDB 優化
+ddb_count=$( (grep '"check":"DDB:Idle"' "$DETAILED_FILE" | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+if [[ $ddb_count -gt 0 ]]; then
+    ddb_savings=$((ddb_count * 20))
+    total_monthly_savings=$((total_monthly_savings + ddb_savings))
+    echo "📊 DynamoDB 優化 ($ddb_count 個表): ~\$$ddb_savings USD/月"
+fi
+
+# CloudFront 價格等級
+cf_count=$( (grep '"check":"NET:CloudFrontPriceClass"' "$DETAILED_FILE" | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+if [[ $cf_count -gt 0 ]]; then
+    cf_savings=$((cf_count * 30))
+    total_monthly_savings=$((total_monthly_savings + cf_savings))
+    echo "🌍 CloudFront 價格等級 ($cf_count 個分發): ~\$$cf_savings USD/月"
+fi
+
+# EFS 生命週期政策 (節省 85%)
+efs_count=$( (grep '"check":"EFS:NoLifecycle"' "$DETAILED_FILE" | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+if [[ $efs_count -gt 0 ]]; then
+    efs_savings=$((efs_count * 40))
+    total_monthly_savings=$((total_monthly_savings + efs_savings))
+    echo "📁 EFS 生命週期政策 ($efs_count 個檔案系統): ~\$$efs_savings USD/月"
+fi
+
+# NLB 閒置
+nlb_idle_count=$( (grep '"check":"NET:NLBIdle"' "$DETAILED_FILE" | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+if [[ $nlb_idle_count -gt 0 ]]; then
+    nlb_savings=$((nlb_idle_count * 25))
+    total_monthly_savings=$((total_monthly_savings + nlb_savings))
+    echo "⚖️  閒置 NLB 清理 ($nlb_idle_count 個): ~\$$nlb_savings USD/月"
+fi
+
+# Kinesis 優化
+kinesis_count=$( (grep '"check":"Kinesis:ProvisionedHigh"' "$DETAILED_FILE" | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+if [[ $kinesis_count -gt 0 ]]; then
+    kinesis_savings=$((kinesis_count * 40))
+    total_monthly_savings=$((total_monthly_savings + kinesis_savings))
+    echo "🌊 Kinesis 配置優化 ($kinesis_count 個串流): ~\$$kinesis_savings USD/月"
+fi
+
+echo
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "${GREEN}💵 預估總節省 (立即可實現):${NC}"
+echo -e "${GREEN}   每月: ~\$$total_monthly_savings USD${NC}"
+echo -e "${GREEN}   每年: ~\$$((total_monthly_savings * 12)) USD${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Savings Plans 額外節省 (需要承諾)
+sp_count=$( (grep '"check":"EC2:SavingsPlanCandidate"' "$DETAILED_FILE" | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+if [[ $sp_count -gt 0 ]]; then
+    echo
+    echo -e "${YELLOW}📈 額外節省機會 (需要承諾):${NC}"
+    echo "   💳 Savings Plans ($sp_count 個實例):"
+    echo "      - 1 年期: 可額外節省高達 42% EC2 成本"
+    echo "      - 3 年期: 可額外節省高達 72% EC2 成本"
+    
+    # 估算 Savings Plans 潛在節省
+    # 假設平均每個實例 $100/月，節省 50%
+    sp_potential=$((sp_count * 50))
+    echo "      - 預估額外節省: ~\$$sp_potential USD/月 (假設 50% 平均節省)"
+fi
+
+# Spot Instance 機會
+spot_opp=$( (grep '"check":"EC2:SpotOpportunity"' "$DETAILED_FILE" | grep '"status":"WARN"' || true) | wc -l | tr -d ' ')
+if [[ $spot_opp -gt 0 ]]; then
+    echo
+    echo "   🎯 Spot Instance 機會:"
+    echo "      - 適用於容錯工作負載"
+    echo "      - 可節省高達 90% EC2 成本"
+fi
+
 echo
 log_success "成本優化分析完成"
 echo "詳細結果請參考: $DETAILED_FILE"
+echo
+echo -e "${CYAN}💡 提示:${NC} 以上節省估算基於行業平均值，實際節省可能因資源大小和使用模式而異"
